@@ -11,30 +11,58 @@
 # ============================================================
 
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_OneDrive"
 autoload is-at-least
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
 APP_NAME="Microsoft OneDrive"
 DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=861011"
 OS_VERSION=$(sw_vers -productVersion)
+MODE="${4:-${MODE:-reset}}"
+MODE=${MODE:l}
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+}
+
+shouldReinstall() {
+	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
 }
 
 RepairApp() {
@@ -75,7 +103,7 @@ RepairApp() {
 	fi
 
 	echo "Office-Reset: Starting package install"
-	sudo /usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
@@ -89,7 +117,7 @@ RepairApp() {
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME; Mode: $MODE"
 
 /usr/bin/pkill -9 'OneDrive'
 /usr/bin/pkill -9 'FinderSync'
@@ -100,20 +128,32 @@ if [ -d "/Applications/OneDrive.app" ]; then
 	APP_VERSION=$(defaults read /Applications/OneDrive.app/Contents/Info.plist CFBundleVersion)
 	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
 	if ! is-at-least 23154.0 $APP_VERSION && is-at-least 10.15 $OS_VERSION; then
-		echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Updating it now"
-		RepairApp
+		if shouldReinstall; then
+			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reinstall mode enabled, updating it now"
+			RepairApp
+		else
+			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reset mode will not reinstall automatically"
+		fi
 	fi
 	echo "Office-Reset: Checking the app bundle for corruption"
 	/usr/bin/codesign -vv --deep /Applications/OneDrive.app
 	if [ $? -gt 0 ]; then
-		echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled" 
-		/bin/rm -rf /Applications/OneDrive.app
-		RepairApp
+		if shouldReinstall; then
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
+			/bin/rm -rf /Applications/OneDrive.app
+			RepairApp
+		else
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+		fi
 	else
 		echo "Office-Reset: Codesign passed successfully"
 	fi
 else
 	echo "Office-Reset: ${APP_NAME} was not found in the default location"
+	if shouldReinstall; then
+		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+		RepairApp
+	fi
 fi
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
@@ -187,27 +227,33 @@ echo "Office-Reset: Removing configuration data for ${APP_NAME}"
 /bin/rm -rf $TMPDIR/com.microsoft.OneDrive.FinderSync
 /bin/rm -f $TMPDIR/OneDriveVersion.xml
 
-KeychainHasLogin=$(/usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	/usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
+if [[ -n "$LoggedInUser" ]]; then
+	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
+	if [ "$KeychainHasLogin" = "" ]; then
+		echo "Office-Reset: Adding user login keychain to list"
+		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	fi
+
+	echo "Display list-keychains for logged-in user"
+	runAsUser /usr/bin/security list-keychains || true
+
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.adalcache' 2>/dev/null || true
+else
+	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-
-echo "Display list-keychains for logged-in user"
-/usr/bin/security list-keychains
-
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK'
-/usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1'
-/usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential'
-/usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies'
-/usr/bin/security delete-generic-password -s 'OneAuthAccount'
-/usr/bin/security delete-generic-password -l 'com.microsoft.adalcache'
 /bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.com.microsoft.oneauth
 
-KEYCHAIN_2_PATH=$(find $HOME/Library/Keychains/**/keychain-2.db)
-/usr/bin/sqlite3 $KEYCHAIN_2_PATH "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';"
+KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
+if [[ -n "$KEYCHAIN_2_PATH" ]]; then
+	/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
+fi
 
 exit 0

@@ -11,27 +11,49 @@
 # ============================================================
 
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_Credentials"
 autoload is-at-least
 
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
+
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
 ## Main
@@ -46,54 +68,58 @@ echo "Office-Reset: Quitting all apps gracefully"
 /usr/bin/pkill -HUP 'Microsoft Outlook'
 /usr/bin/pkill -HUP 'Microsoft OneNote'
 
-KeychainHasLogin=$(/usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	/usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
+if [[ -n "$LoggedInUser" ]]; then
+	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
+	if [ "$KeychainHasLogin" = "" ]; then
+		echo "Office-Reset: Adding user login keychain to list"
+		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	fi
+
+	echo "Display list-keychains for logged-in user"
+	runAsUser /usr/bin/security list-keychains || true
+
+	echo "Office-Reset: Removing keychain entries"
+	runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-internet-password -s 'msoCredentialSchemeADAL' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-internet-password -s 'msoCredentialSchemeLiveId' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 2' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 3' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 2' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 3' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.adalcache' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'Microsoft Office Data' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'Microsoft Office Data' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -G 'Microsoft Office Data' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OutlookCore.Secret' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'MSProtection.framework.service' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'MSProtection.framework.service' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || true
+else
+	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-
-echo "Display list-keychains for logged-in user"
-/usr/bin/security list-keychains
-
-echo "Office-Reset: Removing keychain entries"
-/usr/bin/security delete-generic-password -s 'OneAuthAccount'
-
-/usr/bin/security delete-internet-password -s 'msoCredentialSchemeADAL'
-/usr/bin/security delete-internet-password -s 'msoCredentialSchemeLiveId'
-/usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1'
-/usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1'
-/usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 2'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 3'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 2'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 3'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache'
-/usr/bin/security delete-generic-password -l 'com.microsoft.adalcache'
-/usr/bin/security delete-generic-password -G 'Microsoft Office Data'
-/usr/bin/security delete-generic-password -G 'Microsoft Office Data'
-/usr/bin/security delete-generic-password -G 'Microsoft Office Data'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OutlookCore.Secret'
-
-/usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook'
-/usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook'
-/usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook'
-/usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook'
-
-/usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential'
-/usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential'
-/usr/bin/security delete-generic-password -l 'MSProtection.framework.service'
-/usr/bin/security delete-generic-password -l 'MSProtection.framework.service'
-
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
-/usr/bin/security delete-generic-password -l 'Exchange'
 
 echo "Office-Reset: Removing credential and license files"
 /bin/rm -rf "$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy"
@@ -125,29 +151,29 @@ echo "Office-Reset: Removing credential and license files"
 
 echo "Office-Reset: Changing preferences"
 if [ -e "$HOME/Library/Preferences/com.microsoft.office.plist" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults delete $HOME/Library/Preferences/com.microsoft.office OfficeActivationEmailAddress
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office OfficeAutoSignIn -bool TRUE
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenFREDialog -bool TRUE
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenEnterpriseFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults delete $HOME/Library/Preferences/com.microsoft.office OfficeActivationEmailAddress 2>/dev/null || true
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office OfficeAutoSignIn -bool TRUE
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenEnterpriseFREDialog -bool TRUE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 
 /bin/rm -f "$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
 
-/usr/bin/killall cfprefsd
+runAsUser /usr/bin/killall cfprefsd >/dev/null 2>&1 || true
 
 exit 0

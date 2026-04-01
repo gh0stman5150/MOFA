@@ -3,34 +3,74 @@
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_ZoomPlugin_Removal.zsh
 # Repository: https://github.com/cocopuff2u/MOFA/tree/main/office_reset_tools/mofa_community_maintained
-# Description: Removes the Zoom Plugin
+# Description: Removes the legacy Zoom Outlook plugin for macOS.
 #
 # Version History:
 # 1.0.0 - Based on the latest available package from *Office-Reset.com*; recreated for MOFA to continue maintenance where *Office-Reset.com* left off.
+# 1.0.1 - Rebuilt from an inherited Skype-for-Business template to remove legacy Zoom Outlook plugin remnants and align guidance with Zoom's recommendation to migrate macOS users to the Zoom for Outlook add-in.
 #
 # ============================================================
 
-echo "Office-Reset: Starting postinstall for Remove_SkypeForBusiness"
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+echo "Office-Reset: Starting postinstall for Remove_ZoomPlugin"
 autoload is-at-least
-SCRIPT_FOLDER=$(/usr/bin/dirname "$0")
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
+APP_NAME="Zoom Outlook plugin"
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
+	local target_user="$1"
+
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
+	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
 		else
-			HOME=$(eval echo "~$1")
+			echo "Office-Reset: Skipping missing path $target"
 		fi
+	done
+}
+
+forgetReceiptsMatching() {
+	local pattern="$1"
+	local receipt
+	local found=0
+
+	while IFS= read -r receipt; do
+		[[ -z "$receipt" ]] && continue
+		found=1
+		echo "Office-Reset: Forgetting package receipt $receipt"
+		/usr/sbin/pkgutil --forget "$receipt" >/dev/null 2>&1 || true
+	done < <(/usr/sbin/pkgutil --pkgs 2>/dev/null | /usr/bin/grep -Ei "$pattern" || true)
+
+	if [[ $found -eq 0 ]]; then
+		echo "Office-Reset: No package receipts matched pattern $pattern"
 	fi
 }
 
@@ -38,31 +78,18 @@ SetHomeFolder() {
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
 echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+echo "Office-Reset: Zoom recommends migrating macOS users from the legacy ${APP_NAME} to the Zoom for Outlook add-in."
 
-/usr/bin/pkill -9 'Skype for Business'
+/usr/bin/pkill -9 'Microsoft Outlook' >/dev/null 2>&1 || true
 
-/bin/rm -rf "$HOME/Library/Application Scripts/com.microsoft.SkypeForBusiness"
-/bin/rm -rf "$HOME/Library/Containers/com.microsoft.SkypeForBusiness"
-/bin/rm -rf "$HOME/Library/Preferences/com.microsoft.OutlookSkypeIntegration.plist"
+echo "Office-Reset: Removing plugin remnants for ${APP_NAME}"
+removePathList \
+	"/Library/Application Support/Microsoft/ZoomOutlookPlugin" \
+	"/Users/Shared/ZoomOutlookPlugin" \
+	"$HOME/Documents/ZoomOutlookPlugin" \
+	"$HOME/Library/Containers/com.microsoft.outlook/Data/Documents/ZoomOutlookPlugin" \
+	"$HOME/Library/Containers/com.microsoft.Outlook/Data/Documents/ZoomOutlookPlugin"
 
-/bin/rm -f "/Library/Preferences/com.microsoft.SkypeForBusiness.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.SkypeForBusiness.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.SkypeForBusiness.plist"
-
-KeychainHasLogin=$(/usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	/usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
-fi
-
-/usr/bin/security delete-generic-password -l 'com.microsoft.SkypeForBusiness.HockeySDK'
-/usr/bin/security delete-generic-password -l 'Skype for Business'
-
-/bin/rm -rf "/Applications/Skype for Business.app"
-
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_AU_Bootstrapper.app
-/usr/sbin/pkgutil --forget com.microsoft.SkypeForBusiness
-
-/usr/bin/sudo -u $LoggedInUser $SCRIPT_FOLDER/dockutil --remove com.microsoft.SkypeForBusiness
+forgetReceiptsMatching 'zoom.*outlook|outlook.*zoom'
 
 exit 0

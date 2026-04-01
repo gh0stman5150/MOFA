@@ -10,42 +10,94 @@
 #
 # ============================================================
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_Outlook"
-autoload is-at-least
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
 APP_NAME="Microsoft Outlook"
-APP_GENERATION="2019"
-DOWNLOAD_2019="https://go.microsoft.com/fwlink/?linkid=525137"
-DOWNLOAD_2016="https://go.microsoft.com/fwlink/?linkid=871753"
-OS_VERSION=$(sw_vers -productVersion)
+DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=525137"
 SECURITY_ITEM_NOT_FOUND=44 # `security delete-*` returns exit status 44 ("item not found" / errSecItemNotFound); safe to treat as success on supported macOS versions (see `man security`).
 KEYCHAIN_DELETE_FAILURE=0
 STRICT_KEYCHAIN_DELETE_FAILURES=${STRICT_KEYCHAIN_DELETE_FAILURES:-0}
+MODE="${4:-${MODE:-reset}}"
+MODE=${MODE:l}
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
 GetPrefValue() { # $1: domain, $2: key
-     osascript -l JavaScript << EndOfScript
-     ObjC.import('Foundation');
-     ObjC.unwrap($.NSUserDefaults.alloc.initWithSuiteName('$1').objectForKey('$2'))
-EndOfScript
+	local value
+
+	value=$(/usr/bin/defaults read "$1" "$2" 2>/dev/null) || value=""
+	if [[ -z "$value" ]]; then
+		value=$(runAsUser /usr/bin/defaults read "$1" "$2" 2>/dev/null) || true
+	fi
+
+	printf '%s\n' "$value"
+}
+
+shouldReinstall() {
+	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
+		else
+			echo "Office-Reset: Skipping missing path $target"
+		fi
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -f -- "$target"
+		else
+			echo "Office-Reset: Skipping missing file $target"
+		fi
+	done
 }
 
 GetCustomManifestVersion() {
@@ -63,12 +115,6 @@ GetCustomManifestVersion() {
 }
 
 RepairApp() {
-	if [[ "${APP_GENERATION}" == "2016" ]]; then
-		DOWNLOAD_URL="${DOWNLOAD_2016}"
-	else
-		DOWNLOAD_URL="${DOWNLOAD_2019}"
-	fi
-
 	DOWNLOAD_FOLDER="/Users/Shared/OnDemandInstaller/"
 	if [ -d "$DOWNLOAD_FOLDER" ]; then
 		rm -rf "$DOWNLOAD_FOLDER"
@@ -112,7 +158,7 @@ RepairApp() {
 	fi
 
 	echo "Office-Reset: Starting package install"
-	sudo /usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
@@ -125,23 +171,23 @@ RepairApp() {
 }
 
 FindEntryOpenTech() {
-	/usr/bin/security find-generic-password -G 'MSOpenTech.ADAL.1' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -G 'MSOpenTech.ADAL.1' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryHelpShift() {
-	/usr/bin/security find-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryRMSCredential() {
-	/usr/bin/security find-generic-password -l 'MicrosoftOfficeRMSCredential' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'MicrosoftOfficeRMSCredential' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryProtectionService() {
-	/usr/bin/security find-generic-password -l 'MSProtection.framework.service' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'MSProtection.framework.service' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryExchange() {
-	/usr/bin/security find-generic-password -l 'Exchange' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'Exchange' 2> /dev/null 1> /dev/null
 	echo $?
 }
 
@@ -171,7 +217,7 @@ RunDeleteCommand() {
 DeleteInternetPasswordIfPresent() {
 	local output
 	local status
-	output=$(/usr/bin/security delete-internet-password -s "$1" 2>&1)
+	output=$(runAsUser /usr/bin/security delete-internet-password -s "$1" 2>&1)
 	status=$?
 	HandleSecurityDeleteResult $status "internet password" "$1" "$output"
 }
@@ -179,7 +225,7 @@ DeleteInternetPasswordIfPresent() {
 DeleteGenericPasswordIfPresent() {
 	local output
 	local status
-	output=$(/usr/bin/security delete-generic-password -l "$1" 2>&1)
+	output=$(runAsUser /usr/bin/security delete-generic-password -l "$1" 2>&1)
 	status=$?
 	HandleSecurityDeleteResult $status "generic password label" "$1" "$output"
 }
@@ -187,7 +233,7 @@ DeleteGenericPasswordIfPresent() {
 DeleteGenericPasswordByGenericAttributeIfPresent() {
 	local output
 	local status
-	output=$(/usr/bin/security delete-generic-password -G "$1" 2>&1)
+	output=$(runAsUser /usr/bin/security delete-generic-password -G "$1" 2>&1)
 	status=$?
 	HandleSecurityDeleteResult $status "generic password attribute" "$1" "$output"
 }
@@ -195,32 +241,22 @@ DeleteGenericPasswordByGenericAttributeIfPresent() {
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME; Mode: $MODE"
 
 /usr/bin/pkill -9 'Microsoft Outlook'
 
 if [ -d "/Applications/Microsoft Outlook.app" ]; then
 	APP_VERSION=$(defaults read /Applications/Microsoft\ Outlook.app/Contents/Info.plist CFBundleVersion)
 	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if ! is-at-least 16.17 $APP_VERSION; then
-		APP_GENERATION="2016"
-	fi
-	if [[ "${APP_GENERATION}" == "2019" ]]; then
-		if ! is-at-least 16.73 $APP_VERSION && is-at-least 11.0.0 $OS_VERSION; then
-			echo "Office-Reset: The installed version of ${APP_NAME} (2019 generation) is ancient. Updating it now"
-			RepairApp
-		fi
-		GetCustomManifestVersion
-		if [[ "${CUSTOM_VERSION}" ]] && [[ "${APP_VERSION}" != "${CUSTOM_VERSION}" ]]; then
+	echo "Office-Reset: Office for Mac now uses a unified 16.x codebase; skipping legacy 2016/2019 generation checks"
+	GetCustomManifestVersion
+	if [[ "${CUSTOM_VERSION}" ]] && [[ "${APP_VERSION}" != "${CUSTOM_VERSION}" ]]; then
+		if shouldReinstall; then
 			echo "Office-Reset: ${APP_NAME} is ${APP_VERSION} on-disk, but the pinned version has been set to ${CUSTOM_VERSION}. Removing and reinstalling"
-			/bin/rm -rf /Applications/Microsoft\ Outlook.app
+			removePathList "/Applications/Microsoft Outlook.app"
 			RepairApp
-		fi
-	fi
-	if [[ "${APP_GENERATION}" == "2016" ]]; then
-		if ! is-at-least 16.16 $APP_VERSION; then
-			echo "Office-Reset: The installed version of ${APP_NAME} (2016 generation) is ancient. Updating it now"
-			RepairApp
+		else
+			echo "Office-Reset: ${APP_NAME} does not match the pinned version. Reset mode will not reinstall automatically"
 		fi
 	fi
 	echo "Office-Reset: Checking the app bundle for corruption"
@@ -231,83 +267,93 @@ if [ -d "/Applications/Microsoft Outlook.app" ]; then
 		if [[ "${CODESIGN_ERROR}" = *"OLE.framework"* ]]; then
 			echo "Office-Reset: Only OLE.framework has been modified. Ignoring the repair"
 		else
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
-			/bin/rm -rf /Applications/Microsoft\ Outlook.app
-			RepairApp
+			if shouldReinstall; then
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
+				removePathList "/Applications/Microsoft Outlook.app"
+				RepairApp
+			else
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			fi
 		fi
 	else
 		echo "Office-Reset: Codesign passed successfully"
 	fi
 else
 	echo "Office-Reset: ${APP_NAME} was not found in the default location"
+	if shouldReinstall; then
+		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+		RepairApp
+	fi
 fi
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-/bin/rm -f /Library/Preferences/com.microsoft.Outlook.plist
-/bin/rm -f /Library/Managed\ Preferences/com.microsoft.Outlook.plist
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.Outlook.plist
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Outlook
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Outlook.CalendarWidget
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.Outlook
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.Outlook.CalendarWidget
+removeFileList \
+	"/Library/Preferences/com.microsoft.Outlook.plist" \
+	"/Library/Managed Preferences/com.microsoft.Outlook.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Outlook.plist" \
+	"/Library/Application Support/Microsoft/Office365/User Content.localized/Startup.localized/Word/NormalEmail.dotm" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Startup.localized/Word/NormalEmail.dotm" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/DRM_Evo.plist"
 
-/bin/rm -rf /Library/Application\ Support/Microsoft/WebExPlugin
-/bin/rm -rf /Library/Application\ Support/Microsoft/ZoomOutlookPlugin
-/bin/rm -rf /Users/Shared/ZoomOutlookPlugin
-
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Startup.localized/Word/NormalEmail.dotm
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Startup.localized/Word/NormalEmail.dotm
-
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/DRM_Evo.plist
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/mip_policy
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/FontCache
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/ComRPC32
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/TemporaryItems
+removePathList \
+	"$HOME/Library/Containers/com.microsoft.Outlook" \
+	"$HOME/Library/Containers/com.microsoft.Outlook.CalendarWidget" \
+	"$HOME/Library/Application Scripts/com.microsoft.Outlook" \
+	"$HOME/Library/Application Scripts/com.microsoft.Outlook.CalendarWidget" \
+	"/Library/Application Support/Microsoft/WebExPlugin" \
+	"/Library/Application Support/Microsoft/ZoomOutlookPlugin" \
+	"/Users/Shared/ZoomOutlookPlugin" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/FontCache" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/ComRPC32" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/TemporaryItems"
 OfficeAclFiles=($HOME/Library/Group\ Containers/UBF8T346G9.Office/Microsoft\ Office\ ACL*(N))
 if (( ${#OfficeAclFiles[@]} )); then
 	/bin/rm -f "${OfficeAclFiles[@]}"
 fi
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg
+	removeFileList "$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
 
-/bin/rm -rf $TMPDIR/com.microsoft.Outlook
+	removePathList "$TMPDIR/com.microsoft.Outlook" "/Applications/.Microsoft Outlook.app.installBackup"
 
-/bin/rm -rf /Applications/.Microsoft\ Outlook.app.installBackup
+if [[ -n "$LoggedInUser" ]]; then
+	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
+	if [ "$KeychainHasLogin" = "" ]; then
+		echo "Office-Reset: Adding user login keychain to list"
+		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	fi
 
-KeychainHasLogin=$(/usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	/usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
+	echo "Display list-keychains for logged-in user"
+	runAsUser /usr/bin/security list-keychains || true
+
+	while [[ $(FindEntryOpenTech) -eq 0 ]]; do
+		RunDeleteCommand DeleteGenericPasswordByGenericAttributeIfPresent 'MSOpenTech.ADAL.1' || break
+	done
+	RunDeleteCommand DeleteInternetPasswordIfPresent 'msoCredentialSchemeADAL'
+	RunDeleteCommand DeleteInternetPasswordIfPresent 'msoCredentialSchemeLiveId'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Cache 2'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Cache 3'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Settings 2'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Settings 3'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Ticket Cache'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Ticket Cache 2'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'com.microsoft.adalcache'
+	RunDeleteCommand DeleteGenericPasswordIfPresent 'com.microsoft.OutlookCore.Secret'
+	while [[ $(FindEntryHelpShift) -eq 0 ]]; do
+		RunDeleteCommand DeleteGenericPasswordIfPresent 'com.helpshift.data_com.microsoft.Outlook' || break
+	done
+	while [[ $(FindEntryRMSCredential) -eq 0 ]]; do
+		RunDeleteCommand DeleteGenericPasswordIfPresent 'MicrosoftOfficeRMSCredential' || break
+	done
+	while [[ $(FindEntryProtectionService) -eq 0 ]]; do
+		RunDeleteCommand DeleteGenericPasswordIfPresent 'MSProtection.framework.service' || break
+	done
+
+	while [[ $(FindEntryExchange) -eq 0 ]]; do
+		RunDeleteCommand DeleteGenericPasswordIfPresent 'Exchange' || break
+	done
+else
+	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-
-echo "Display list-keychains for logged-in user"
-/usr/bin/security list-keychains
-
-while [[ $(FindEntryOpenTech) -eq 0 ]]; do
-	RunDeleteCommand DeleteGenericPasswordByGenericAttributeIfPresent 'MSOpenTech.ADAL.1' || break
-done
-RunDeleteCommand DeleteInternetPasswordIfPresent 'msoCredentialSchemeADAL'
-RunDeleteCommand DeleteInternetPasswordIfPresent 'msoCredentialSchemeLiveId'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Cache 2'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Cache 3'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Settings 2'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Identities Settings 3'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Ticket Cache'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'Microsoft Office Ticket Cache 2'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'com.microsoft.adalcache'
-RunDeleteCommand DeleteGenericPasswordIfPresent 'com.microsoft.OutlookCore.Secret'
-while [[ $(FindEntryHelpShift) -eq 0 ]]; do
-	RunDeleteCommand DeleteGenericPasswordIfPresent 'com.helpshift.data_com.microsoft.Outlook' || break
-done
-while [[ $(FindEntryRMSCredential) -eq 0 ]]; do
-	RunDeleteCommand DeleteGenericPasswordIfPresent 'MicrosoftOfficeRMSCredential' || break
-done
-while [[ $(FindEntryProtectionService) -eq 0 ]]; do
-	RunDeleteCommand DeleteGenericPasswordIfPresent 'MSProtection.framework.service' || break
-done
-
-while [[ $(FindEntryExchange) -eq 0 ]]; do
-	RunDeleteCommand DeleteGenericPasswordIfPresent 'Exchange' || break
-done
 
 if [[ $KEYCHAIN_DELETE_FAILURE -ne 0 ]]; then
 	echo "Office-Reset: Completed with one or more keychain deletion errors" >&2

@@ -10,39 +10,113 @@
 #
 # ============================================================
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_PowerPoint"
-autoload is-at-least
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
 APP_NAME="Microsoft PowerPoint"
-APP_GENERATION="2019"
-DOWNLOAD_2019="https://go.microsoft.com/fwlink/?linkid=525136"
-DOWNLOAD_2016="https://go.microsoft.com/fwlink/?linkid=871751"
-OS_VERSION=$(sw_vers -productVersion)
+DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=525136"
+MODE="${4:-${MODE:-reset}}"
+MODE=${MODE:l}
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
 GetPrefValue() { # $1: domain, $2: key
-     osascript -l JavaScript << EndOfScript
-     ObjC.import('Foundation');
-     ObjC.unwrap($.NSUserDefaults.alloc.initWithSuiteName('$1').objectForKey('$2'))
-EndOfScript
+	local value
+
+	value=$(/usr/bin/defaults read "$1" "$2" 2>/dev/null) || value=""
+	if [[ -z "$value" ]]; then
+		value=$(runAsUser /usr/bin/defaults read "$1" "$2" 2>/dev/null) || true
+	fi
+
+	printf '%s\n' "$value"
+}
+
+shouldReinstall() {
+	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
+		else
+			echo "Office-Reset: Skipping missing path $target"
+		fi
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -f -- "$target"
+		else
+			echo "Office-Reset: Skipping missing file $target"
+		fi
+	done
+}
+
+removeFindMatches() {
+	local search_dir="$1"
+	local name_pattern="$2"
+	local match
+	local found=0
+
+	if [[ ! -d "$search_dir" ]]; then
+		echo "Office-Reset: Skipping missing directory $search_dir"
+		return 0
+	fi
+
+	while IFS= read -r match; do
+		found=1
+		echo "Office-Reset: Removing $match"
+		/bin/rm -f -- "$match"
+	done < <(/usr/bin/find "$search_dir" -maxdepth 1 \( -type f -o -type l \) -name "$name_pattern" 2>/dev/null)
+
+	if [[ $found -eq 0 ]]; then
+		echo "Office-Reset: No matches for $name_pattern in $search_dir"
+	fi
 }
 
 GetCustomManifestVersion() {
@@ -60,12 +134,6 @@ GetCustomManifestVersion() {
 }
 
 RepairApp() {
-	if [[ "${APP_GENERATION}" == "2016" ]]; then
-		DOWNLOAD_URL="${DOWNLOAD_2016}"
-	else
-		DOWNLOAD_URL="${DOWNLOAD_2019}"
-	fi
-
 	DOWNLOAD_FOLDER="/Users/Shared/OnDemandInstaller/"
 	if [ -d "$DOWNLOAD_FOLDER" ]; then
 		rm -rf "$DOWNLOAD_FOLDER"
@@ -109,7 +177,7 @@ RepairApp() {
 	fi
 
 	echo "Office-Reset: Starting package install"
-	sudo /usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
@@ -124,32 +192,22 @@ RepairApp() {
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME; Mode: $MODE"
 
 /usr/bin/pkill -9 'Microsoft PowerPoint'
 
 if [ -d "/Applications/Microsoft PowerPoint.app" ]; then
 	APP_VERSION=$(defaults read /Applications/Microsoft\ PowerPoint.app/Contents/Info.plist CFBundleVersion)
 	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if ! is-at-least 16.17 $APP_VERSION; then
-		APP_GENERATION="2016"
-	fi
-	if [[ "${APP_GENERATION}" == "2019" ]]; then
-		if ! is-at-least 16.73 $APP_VERSION && is-at-least 11.0.0 $OS_VERSION; then
-			echo "Office-Reset: The installed version of ${APP_NAME} (2019 generation) is ancient. Updating it now"
-			RepairApp
-		fi
-		GetCustomManifestVersion
-		if [[ "${CUSTOM_VERSION}" ]] && [[ "${APP_VERSION}" != "${CUSTOM_VERSION}" ]]; then
+	echo "Office-Reset: Office for Mac now uses a unified 16.x codebase; skipping legacy 2016/2019 generation checks"
+	GetCustomManifestVersion
+	if [[ "${CUSTOM_VERSION}" ]] && [[ "${APP_VERSION}" != "${CUSTOM_VERSION}" ]]; then
+		if shouldReinstall; then
 			echo "Office-Reset: ${APP_NAME} is ${APP_VERSION} on-disk, but the pinned version has been set to ${CUSTOM_VERSION}. Removing and reinstalling"
-			/bin/rm -rf /Applications/Microsoft\ PowerPoint.app
+			removePathList "/Applications/Microsoft PowerPoint.app"
 			RepairApp
-		fi
-	fi
-	if [[ "${APP_GENERATION}" == "2016" ]]; then
-		if ! is-at-least 16.16 $APP_VERSION; then
-			echo "Office-Reset: The installed version of ${APP_NAME} (2016 generation) is ancient. Updating it now"
-			RepairApp
+		else
+			echo "Office-Reset: ${APP_NAME} does not match the pinned version. Reset mode will not reinstall automatically"
 		fi
 	fi
 	echo "Office-Reset: Checking the app bundle for corruption"
@@ -160,46 +218,54 @@ if [ -d "/Applications/Microsoft PowerPoint.app" ]; then
 		if [[ "${CODESIGN_ERROR}" = *"OLE.framework"* ]]; then
 			echo "Office-Reset: Only OLE.framework has been modified. Ignoring the repair"
 		else
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
-			/bin/rm -rf /Applications/Microsoft\ PowerPoint.app
-			RepairApp
+			if shouldReinstall; then
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
+				removePathList "/Applications/Microsoft PowerPoint.app"
+				RepairApp
+			else
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			fi
 		fi
-	else
-		echo "Office-Reset: Codesign passed successfully"
-	fi
+		else
+			echo "Office-Reset: Codesign passed successfully"
+		fi
 else
 	echo "Office-Reset: ${APP_NAME} was not found in the default location"
+	if shouldReinstall; then
+		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+		RepairApp
+	fi
 fi
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-/bin/rm -f /Library/Preferences/com.microsoft.Powerpoint.plist
-/bin/rm -f /Library/Managed\ Preferences/com.microsoft.Powerpoint.plist
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.Powerpoint.plist
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Powerpoint
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.Powerpoint
+removeFileList \
+	"/Library/Preferences/com.microsoft.Powerpoint.plist" \
+	"/Library/Managed Preferences/com.microsoft.Powerpoint.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Powerpoint.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
 
-/bin/rm -rf /Applications/.Microsoft\ PowerPoint.app.installBackup
+removePathList \
+	"$HOME/Library/Containers/com.microsoft.Powerpoint" \
+	"$HOME/Library/Application Scripts/com.microsoft.Powerpoint" \
+	"/Applications/.Microsoft PowerPoint.app.installBackup" \
+	"/Library/Application Support/Microsoft/Office365/User Content.localized/Startup.localized/PowerPoint" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Startup.localized/PowerPoint" \
+	"/Library/Application Support/Microsoft/Office365/User Content.localized/Themes" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Themes" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/FontCache" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/ComRPC32" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/TemporaryItems" \
+	"$TMPDIR/com.microsoft.Powerpoint"
 
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Startup.localized/PowerPoint
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Templates.localized/*.pot
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Templates.localized/*.potx
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Templates.localized/*.potm
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Startup.localized/PowerPoint
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Templates.localized/*.pot
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Templates.localized/*.potx
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Templates.localized/*.potm
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Add-Ins/*.ppam
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Add-Ins/*.ppam
-/bin/rm -rf /Library/Application\ Support/Microsoft/Office365/User\ Content.localized/Themes
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/User\ Content.localized/Themes
-
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/mip_policy
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/FontCache
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/ComRPC32
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/TemporaryItems
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/Microsoft\ Office\ ACL*
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg
-
-/bin/rm -rf $TMPDIR/com.microsoft.Powerpoint
+removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.pot"
+removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.potx"
+removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.potm"
+removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.pot"
+removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.potx"
+removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.potm"
+removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Add-Ins" "*.ppam"
+removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Add-Ins" "*.ppam"
+removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office" "Microsoft Office ACL*"
 
 exit 0

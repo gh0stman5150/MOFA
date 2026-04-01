@@ -18,11 +18,19 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 echo "Office-Reset: Starting Reset_Teams"
 autoload is-at-least
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
 APP_NAME="Microsoft Teams"
 # DOWNLOAD_URL_TEAMS="https://go.microsoft.com/fwlink/?linkid=869428" # Old Classic URL pointing to same URL as the new
 DOWNLOAD_URL_TEAMS="https://go.microsoft.com/fwlink/?linkid=2249065"
 INSTALLATION_RETRIES=5
 OS_VERSION=$(sw_vers -productVersion)
+MODE="${4:-${MODE:-reset}}"
+MODE=${MODE:l}
 INSTALL="" # "force" will always delete and reinstall to latest version of Teams
 
 # MARK: Parse arguments
@@ -44,38 +52,48 @@ while [[ -n $1 ]]; do
     shift 1
 done
 
+MODE=${MODE:l}
+INSTALL=${INSTALL:l}
+
 
 # MARK: Functions
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
-    LoggedInUserID=$(id -u "$LoggedInUser")
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
 }
 
 runAsUser() {
-    launchctl asuser $LoggedInUserID sudo -u $LoggedInUser "$@"
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
-open_systempreferences() {
-    local preferenceID="$1"
-    echo "open url: x-apple.systempreferences:${preferenceID}"
-	su - $LoggedInUser -c "open -u \"x-apple.systempreferences:${preferenceID}\" 2>/dev/null"
+shouldReinstall() {
+	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" || "$INSTALL" == "force" ]]
 }
 
 RepairApp() {
@@ -117,7 +135,7 @@ RepairApp() {
 	fi
 
 	echo "Office-Reset: Starting package install"
-	sudo /usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
@@ -128,14 +146,14 @@ RepairApp() {
 }
 
 FindEntryTeamsIdentity() {
-	/usr/bin/security find-generic-password -l 'Microsoft Teams Identities Cache' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'Microsoft Teams Identities Cache' 2> /dev/null 1> /dev/null
 	echo $?
 }
 
 ## MARK: Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser ($LoggedInUserID); Home Folder: $HOME"
+echo "Office-Reset: Running as: $LoggedInUser ($LoggedInUserID); Home Folder: $HOME; Mode: $MODE; Install flag: ${INSTALL:-none}"
 
 /usr/bin/pkill -9 'Microsoft Teams*'
 
@@ -145,14 +163,11 @@ if [ -d "${appPath}" ]; then
 	APP_VERSION=$(defaults read "${appPath}/Contents/Info.plist" CFBundleVersion)
 	APP_BUNDLEID=$(defaults read "${appPath}/Contents/Info.plist" CFBundleIdentifier)
 	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME} with bundle ID ${APP_BUNDLEID}"
-	if ! is-at-least 23247.0 $APP_VERSION && is-at-least 10.15 $OS_VERSION; then
-		echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Removing it now"
-		rm -rf "${appPath}"
-	elif [[ $INSTALL == "force" ]]; then
+	if [[ $INSTALL == "force" ]]; then
 		echo "Office-Reset: Force reinstall of ${APP_NAME}. Removing it now"
 		rm -rf "${appPath}"
 	else
-		echo "Office-Reset: The installed version of ${APP_NAME} is $APP_VERSION. Should be fine"
+		echo "Office-Reset: Leaving the installed ${APP_NAME} app bundle in place. Teams for Mac updates through MAU and its own updater."
 	fi
 fi
 appPath="/Applications/Microsoft Teams classic.app"
@@ -180,7 +195,7 @@ if [ -d "${backgroundsFolder}" ]; then
 	done
 	echo "Office-Reset: moved to ${destFolder}"
 	mv "${backgroundsFolder}" "${destFolder}"
-	open "${destFolder}"
+	echo "Office-Reset: Classic Teams backgrounds were moved to ${destFolder}"
 fi
 # Preserve backgrounds
 backgroundsFolder="$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/Backgrounds"
@@ -244,49 +259,59 @@ echo "Office-Reset: Removing configuration data for ${APP_NAME}"
 # MARK: Extra things to clean
 # Reset TCC (PPPC) for Teams
 echo "Reset TCC for com.microsoft.teams2"
-tccutil reset All com.microsoft.teams2
+runAsUser /usr/bin/tccutil reset All com.microsoft.teams2 >/dev/null 2>&1 || true
 
 # Keychain items
-KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
+if [[ -n "$LoggedInUser" ]]; then
+	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
+	if [ "$KeychainHasLogin" = "" ]; then
+		echo "Office-Reset: Adding user login keychain to list"
+		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	fi
+
+	echo "Display list-keychains for logged-in user"
+	runAsUser /usr/bin/security list-keychains || true
+
+	while [[ $(FindEntryTeamsIdentity) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams Identities Cache' 2>/dev/null || break
+	done
+	runAsUser /usr/bin/security delete-generic-password -l 'Teams Safe Storage' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams (work or school) Safe Storage' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'teamsIv' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'teamsKey' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.helper.HockeySDK' 2>/dev/null || true
+else
+	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-
-echo "Display list-keychains for logged-in user"
-runAsUser /usr/bin/security list-keychains
-
-while [[ $(FindEntryTeamsIdentity) -eq 0 ]]; do
-	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams Identities Cache'
-done
-runAsUser /usr/bin/security delete-generic-password -l 'Teams Safe Storage'
-runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams (work or school) Safe Storage'
-runAsUser /usr/bin/security delete-generic-password -l 'teamsIv'
-runAsUser /usr/bin/security delete-generic-password -l 'teamsKey'
-runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.HockeySDK'
-runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.helper.HockeySDK'
 
 # Restore backgrounds
 if [ -d "/tmp/Backgrounds" ] ; then
 	echo "Office-Reset: Restore backgrounds for ${APP_NAME}"
-	runAsUser mkdir -p "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/"
-	mv /tmp/Backgrounds "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/"
-	chown -R $LoggedInUser "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams"
+	if [[ -n "$LoggedInUser" ]]; then
+		runAsUser mkdir -p "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/" || true
+		mv /tmp/Backgrounds "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/"
+		chown -R $LoggedInUser "$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams"
+	fi
 fi
 
 
 # MARK: Install Teams if damaged or not found
 appPath="/Applications/Microsoft Teams.app"
 if ! codesign -vv --deep "${appPath}"; then
-	echo "Office-Reset: ${APP_NAME} is damaged or not existing so preparing for reinstallation"
-	[ -e "${appPath}" ] && rm -rf "${appPath}"
+	if shouldReinstall; then
+		echo "Office-Reset: ${APP_NAME} is damaged or not existing so preparing for reinstallation"
+		[ -e "${appPath}" ] && rm -rf "${appPath}"
+	else
+		echo "Office-Reset: ${APP_NAME} is damaged or missing. Reset mode will not reinstall automatically."
+	fi
 else
 	echo "Office-Reset: Codesign passed successfully"
 	APP_VERSION=$(defaults read "${appPath}/Contents/Info.plist" CFBundleVersion)
 	echo "Office-Reset: The installed version of ${APP_NAME} is $APP_VERSION"
 fi
 folderCounter=1
-while [ ! -d "${appPath}" ]; do
+while shouldReinstall && [ ! -d "${appPath}" ]; do
 	echo "Office-Reset: ${APP_NAME} not installed. Trying ${folderCounter}. installation at the most $INSTALLATION_RETRIES times, now"
 	RepairApp "$DOWNLOAD_URL_TEAMS"
 	codesign -vv --deep "${appPath}"
@@ -302,7 +327,10 @@ while [ ! -d "${appPath}" ]; do
 	((folderCounter++))
 done
 
-# Open window so user can allow screen recording for Teams again
-open_systempreferences "com.apple.preference.security?Privacy_ScreenCapture"
+if ! shouldReinstall && [ ! -d "${appPath}" ]; then
+	echo "Office-Reset: ${APP_NAME} is not installed. Use MODE=reinstall or INSTALL=force to reinstall it from Jamf."
+fi
+
+echo "Office-Reset: Screen recording permission for Teams may need to be re-approved in System Settings."
 
 exit 0

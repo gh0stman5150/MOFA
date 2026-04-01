@@ -10,29 +10,126 @@
 #
 # ============================================================
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_AutoUpdate"
 autoload is-at-least
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
 APP_NAME="Microsoft AutoUpdate"
 DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=830196"
+MAU_RECOMMENDED_VERSION="4.73.24071426"
+MODE="${4:-${MODE:-reset}}"
+MODE=${MODE:l}
 
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+}
+
+shouldReinstall() {
+	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
+		else
+			echo "Office-Reset: Skipping missing path $target"
+		fi
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -f -- "$target"
+		else
+			echo "Office-Reset: Skipping missing file $target"
+		fi
+	done
+}
+
+bootoutJob() {
+	local domain="$1"
+	local plist="$2"
+
+	if [[ ! -e "$plist" ]]; then
+		echo "Office-Reset: Skipping missing launchd item $plist"
+		return 0
+	fi
+
+	case "$domain" in
+		gui)
+			if [[ -n "$LoggedInUserID" ]]; then
+				/bin/launchctl bootout "gui/${LoggedInUserID}" "$plist" >/dev/null 2>&1 || \
+				/bin/launchctl unload "$plist" >/dev/null 2>&1 || true
+			else
+				echo "Office-Reset: No logged-in user detected; skipping gui launchd item $plist"
+			fi
+			;;
+		system)
+			/bin/launchctl bootout system "$plist" >/dev/null 2>&1 || \
+			/bin/launchctl unload "$plist" >/dev/null 2>&1 || true
+			;;
+	esac
+}
+
+registerMauApp() {
+	local app_path="$1"
+	local app_id="$2"
+	local app_domain="$3"
+	local record
+
+	if [[ ! -d "$app_path" ]]; then
+		return 0
+	fi
+
+	record="{ 'Application ID' = '${app_id}';"
+	if [[ -n "$app_domain" ]]; then
+		record="${record} 'App Domain' = '${app_domain}' ;"
+	fi
+	record="${record} }"
+
+	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 Applications -dict-add "$app_path" "$record"
 }
 
 RepairApp() {
@@ -73,7 +170,7 @@ RepairApp() {
 	fi
 
 	echo "Office-Reset: Starting package install"
-	sudo /usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
@@ -86,7 +183,7 @@ RepairApp() {
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME; Mode: $MODE"
 
 echo "Office-Reset: Stopping update services"
 /usr/bin/pkill -9 'Microsoft AutoUpdate'
@@ -97,153 +194,92 @@ echo "Office-Reset: Stopping update services"
 /usr/bin/pkill -9 'com.microsoft.autoupdate.helpertool'
 /usr/bin/pkill -9 'com.microsoft.autoupdate.bootstrapper.helper'
 
-/bin/launchctl stop /Library/LaunchAgents/com.microsoft.update.agent.plist
-/bin/launchctl stop /Library/LaunchAgents/com.microsoft.autoupdate.helper.plist
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.autoupdate.helper
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist
-
-/bin/launchctl unload /Library/LaunchAgents/com.microsoft.update.agent.plist
-/bin/launchctl unload /Library/LaunchAgents/com.microsoft.autoupdate.helper.plist
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.autoupdate.helper
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist
+bootoutJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
+bootoutJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist"
+removeFileList \
+	"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+	"/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+	"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+	"$TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate.fba.txt" \
+	"$TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
 
-/bin/rm -f "/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.autoupdate.fba.plist"
-
-/bin/rm -f "/var/root/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist"
-
-/bin/rm -rf "$HOME/Library/Caches/com.microsoft.autoupdate2"
-/bin/rm -rf "$HOME/Library/Caches/com.microsoft.autoupdate.fba"
-
-/bin/rm -rf "$HOME/Library/HTTPStorages/com.microsoft.autoupdate2"
-/bin/rm -rf "$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba"
-
-/bin/rm -rf "$HOME/Library/Application Support/Microsoft AU Daemon"
-
-/bin/rm -rf "/Library/Application Support/Microsoft/MERP2.0"
-
-/bin/rm -rf "$TMPDIR/MSauClones"
-/bin/rm -rf "/Library/Caches/com.microsoft.autoupdate.helper/"
-/bin/rm -rf "/Library/Caches/com.microsoft.autoupdate.fba/"
-/bin/rm -f "$TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate.fba.txt"
-/bin/rm -f "$TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
-
-/bin/rm -rf "/Applications/.Microsoft Word.app.installBackup"
-/bin/rm -rf "/Applications/.Microsoft Excel.app.installBackup"
-/bin/rm -rf "/Applications/.Microsoft PowerPoint.app.installBackup"
-/bin/rm -rf "/Applications/.Microsoft Outlook.app.installBackup"
-/bin/rm -rf "/Applications/.Microsoft OneNote.app.installBackup"
+removePathList \
+	"$HOME/Library/Caches/com.microsoft.autoupdate2" \
+	"$HOME/Library/Caches/com.microsoft.autoupdate.fba" \
+	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2" \
+	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba" \
+	"$HOME/Library/Application Support/Microsoft AU Daemon" \
+	"/Library/Application Support/Microsoft/MERP2.0" \
+	"$TMPDIR/MSauClones" \
+	"/Library/Caches/com.microsoft.autoupdate.helper/" \
+	"/Library/Caches/com.microsoft.autoupdate.fba/" \
+	"/Applications/.Microsoft Word.app.installBackup" \
+	"/Applications/.Microsoft Excel.app.installBackup" \
+	"/Applications/.Microsoft PowerPoint.app.installBackup" \
+	"/Applications/.Microsoft Outlook.app.installBackup" \
+	"/Applications/.Microsoft OneNote.app.installBackup"
 
 /usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 AcknowledgedDataCollectionPolicy -string 'RequiredDataOnly'
 
 if [ -d "/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app" ]; then
 	APP_VERSION=$(defaults read /Library/Application\ Support/Microsoft/MAU2.0/Microsoft\ AutoUpdate.app/Contents/Info.plist CFBundleVersion)
 	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if ! is-at-least 4.49 $APP_VERSION; then
-		echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Updating it now"
-		RepairApp
+	if ! is-at-least ${MAU_RECOMMENDED_VERSION} $APP_VERSION; then
+		if shouldReinstall; then
+			echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reinstall mode enabled, updating it now"
+			RepairApp
+		else
+			echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reset mode will not reinstall automatically"
+		fi
 	fi
 	echo "Office-Reset: Checking the app bundle for corruption"
 	/usr/bin/codesign -vv --deep /Library/Application\ Support/Microsoft/MAU2.0/Microsoft\ AutoUpdate.app
 	if [ $? -gt 0 ]; then
-		echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled" 
-		/bin/rm -rf /Library/Application\ Support/Microsoft/MAU2.0/Microsoft\ AutoUpdate.app
-		RepairApp
+		if shouldReinstall; then
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
+			removePathList "/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app"
+			RepairApp
+		else
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+		fi
 	else
 		echo "Office-Reset: Codesign passed successfully"
 	fi
 else
 	echo "Office-Reset: ${APP_NAME} was not found in the default location"
+	if shouldReinstall; then
+		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+		RepairApp
+	fi
 fi
 
 echo "Office-Reset: Creating new preferences"
-/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app" "{ 'Application ID' = 'MSau04'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-
-WORD_VERSION=$(defaults read /Applications/Microsoft\ Word.app/Contents/Info.plist CFBundleVersion)
-if [[ "${WORD_VERSION}" != "" ]]; then
-	if is-at-least 16.17 $WORD_VERSION; then
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Word.app" "{ 'Application ID' = 'MSWD2019'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	else
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Word.app" "{ 'Application ID' = 'MSWD15'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	fi
-fi
-
-EXCEL_VERSION=$(defaults read /Applications/Microsoft\ Excel.app/Contents/Info.plist CFBundleVersion)
-if [[ "${EXCEL_VERSION}" != "" ]]; then
-	if is-at-least 16.17 $EXCEL_VERSION; then
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Excel.app" "{ 'Application ID' = 'XCEL2019'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	else
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Excel.app" "{ 'Application ID' = 'XCEL15'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	fi
-fi
-
-POWERPOINT_VERSION=$(defaults read /Applications/Microsoft\ PowerPoint.app/Contents/Info.plist CFBundleVersion)
-if [[ "${POWERPOINT_VERSION}" != "" ]]; then
-	if is-at-least 16.17 $POWERPOINT_VERSION; then
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft PowerPoint.app" "{ 'Application ID' = 'PPT32019'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	else
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft PowerPoint.app" "{ 'Application ID' = 'PPT315'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	fi
-fi
-
-OUTLOOK_VERSION=$(defaults read /Applications/Microsoft\ Outlook.app/Contents/Info.plist CFBundleVersion)
-if [[ "${OUTLOOK_VERSION}" != "" ]]; then
-	if is-at-least 16.17 $OUTLOOK_VERSION; then
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Outlook.app" "{ 'Application ID' = 'OPIM2019'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	else
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Outlook.app" "{ 'Application ID' = 'OPIM15'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	fi
-fi
-
-ONENOTE_VERSION=$(defaults read /Applications/Microsoft\ OneNote.app/Contents/Info.plist CFBundleVersion)
-if [[ "${ONENOTE_VERSION}" != "" ]]; then
-	if is-at-least 16.17 $ONENOTE_VERSION; then
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft OneNote.app" "{ 'Application ID' = 'ONMC2019'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	else
-		/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft OneNote.app" "{ 'Application ID' = 'ONMC15'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-	fi
-fi
-
-if [ -d "/Applications/OneDrive.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/OneDrive.app" "{ 'Application ID' = 'ONDR18'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-fi
-
-if [ -d "/Applications/Microsoft Teams.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Teams.app" "{ 'Application ID' = 'TEAMS10'; LCID = 1033 ; 'App Domain' = 'com.microsoft.office' ; }"
-fi
-
-if [ -d "/Applications/Microsoft Edge.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Edge.app" "{ 'Application ID' = 'EDGE01'; LCID = 1033 ; }"
-fi
-if [ -d "/Applications/Microsoft Edge Beta.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Edge Beta.app" "{ 'Application ID' = 'EDBT01'; LCID = 1033 ; }"
-fi
-if [ -d "/Applications/Microsoft Edge Canary.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Edge Canary.app" "{ 'Application ID' = 'EDCN01'; LCID = 1033 ; }"
-fi
-if [ -d "/Applications/Microsoft Edge Dev.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Edge Dev.app" "{ 'Application ID' = 'EDDV01'; LCID = 1033 ; }"
-fi
-
-if [ -d "/Applications/Microsoft Remote Desktop.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Remote Desktop.app" "{ 'Application ID' = 'MSRD10'; LCID = 1033 ; }"
-fi
-
-if [ -d "/Applications/Skype For Business.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Skype For Business.app" "{ 'Application ID' = 'MSFB16'; LCID = 1033 ; }"
-fi
-
-if [ -d "/Applications/Company Portal.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Company Portal.app" "{ 'Application ID' = 'IMCP01'; LCID = 1033 ; }"
-fi
-
-if [ -d "/Applications/Microsoft Defender ATP.app" ]; then
-	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 ApplicationsSystem -dict-add "/Applications/Microsoft Defender ATP.app" "{ 'Application ID' = 'WDAV00'; LCID = 1033 ; }"
-fi
+registerMauApp "/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app" "MSau04" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Word.app" "MSWD2019" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Excel.app" "XCEL2019" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft PowerPoint.app" "PPT32019" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Outlook.app" "OPIM2019" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft OneNote.app" "ONMC2019" "com.microsoft.office"
+registerMauApp "/Applications/OneDrive.app" "ONDR18" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Teams.app" "TEAMS21" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Teams (work or school).app" "TEAMS21" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Teams (work preview).app" "TEAMS21" "com.microsoft.office"
+registerMauApp "/Applications/Microsoft Edge.app" "EDGE01"
+registerMauApp "/Applications/Microsoft Edge Beta.app" "EDBT01"
+registerMauApp "/Applications/Microsoft Edge Canary.app" "EDCN01"
+registerMauApp "/Applications/Microsoft Edge Dev.app" "EDDV01"
+registerMauApp "/Applications/Windows App.app" "MSRD10"
+registerMauApp "/Applications/Microsoft Remote Desktop.app" "MSRD10"
+registerMauApp "/Applications/Skype For Business.app" "MSFB16"
+registerMauApp "/Applications/Company Portal.app" "IMCP01"
+registerMauApp "/Applications/Microsoft Defender.app" "WDAV00"
+registerMauApp "/Applications/Microsoft Defender ATP.app" "WDAV00"
 
 exit 0

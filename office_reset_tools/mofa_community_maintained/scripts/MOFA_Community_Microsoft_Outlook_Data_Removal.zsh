@@ -11,27 +11,73 @@
 # ============================================================
 
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Remove_Outlook_Data"
 autoload is-at-least
 
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
+
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
+		else
+			echo "Office-Reset: Skipping missing path $target"
+		fi
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -f -- "$target"
+		else
+			echo "Office-Reset: Skipping missing file $target"
+		fi
+	done
 }
 
 ## Main
@@ -41,9 +87,10 @@ echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
 
 /usr/bin/pkill -9 'Microsoft Outlook'
 
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.Outlook.plist"
+removeFileList \
+	"$HOME/Library/Preferences/com.microsoft.Outlook.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/OutlookProfile.plist"
 
-/bin/rm -rf "$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook"
-/bin/rm -f "$HOME/Library/Group Containers/UBF8T346G9.Office/OutlookProfile.plist"
+removePathList "$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook"
 
 exit 0

@@ -11,27 +11,110 @@
 # ============================================================
 
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting preinstall for Remove_Office"
 autoload is-at-least
 
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
+
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -rf -- "$target"
+		else
+			echo "Office-Reset: Skipping missing path $target"
+		fi
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ -e "$target" || -L "$target" ]]; then
+			echo "Office-Reset: Removing $target"
+			/bin/rm -f -- "$target"
+		else
+			echo "Office-Reset: Skipping missing file $target"
+		fi
+	done
+}
+
+forgetReceiptList() {
+	local receipt
+	for receipt in "$@"; do
+		if /usr/sbin/pkgutil --pkgs | /usr/bin/grep -qxF "$receipt"; then
+			echo "Office-Reset: Forgetting package receipt $receipt"
+			/usr/sbin/pkgutil --forget "$receipt" >/dev/null 2>&1 || true
+		else
+			echo "Office-Reset: Skipping missing package receipt $receipt"
+		fi
+	done
+}
+
+bootoutJob() {
+	local domain="$1"
+	local plist="$2"
+
+	if [[ ! -e "$plist" ]]; then
+		echo "Office-Reset: Skipping missing launchd item $plist"
+		return 0
+	fi
+
+	case "$domain" in
+		gui)
+			if [[ -n "$LoggedInUserID" ]]; then
+				/bin/launchctl bootout "gui/${LoggedInUserID}" "$plist" >/dev/null 2>&1 || \
+				/bin/launchctl unload "$plist" >/dev/null 2>&1 || true
+			else
+				echo "Office-Reset: No logged-in user detected; skipping gui launchd item $plist"
+			fi
+			;;
+		system)
+			/bin/launchctl bootout system "$plist" >/dev/null 2>&1 || \
+			/bin/launchctl unload "$plist" >/dev/null 2>&1 || true
+			;;
+	esac
 }
 
 ## Main
@@ -59,52 +142,44 @@ echo "Office-Reset: Stopping services"
 /usr/bin/pkill -9 'com.microsoft.autoupdate.helpertool'
 /usr/bin/pkill -9 'com.microsoft.autoupdate.bootstrapper.helper'
 
-/bin/launchctl stop /Library/LaunchAgents/com.microsoft.update.agent.plist
-/bin/launchctl stop /Library/LaunchAgents/com.microsoft.autoupdate.helper.plist
-/bin/launchctl stop /Library/LaunchAgents/com.microsoft.OneDriveStandaloneUpdater.plist
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.autoupdate.helper
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.OneDriveUpdaterDaemon.plist
-/bin/launchctl stop /Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist
-
-/bin/launchctl unload /Library/LaunchAgents/com.microsoft.update.agent.plist
-/bin/launchctl unload /Library/LaunchAgents/com.microsoft.autoupdate.helper.plist
-/bin/launchctl unload /Library/LaunchAgents/com.microsoft.OneDriveStandaloneUpdater.plist
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.autoupdate.helper
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.OneDriveUpdaterDaemon.plist
-/bin/launchctl unload /Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist
+bootoutJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
+bootoutJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
+bootoutJob gui "/Library/LaunchAgents/com.microsoft.OneDriveStandaloneUpdater.plist"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.OneDriveUpdaterDaemon.plist"
+bootoutJob system "/Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist"
 
 echo "Office-Reset: Removing apps"
-/bin/rm -rf "/Applications/Microsoft Word.app"
-/bin/rm -rf "/Applications/Microsoft Excel.app"
-/bin/rm -rf "/Applications/Microsoft PowerPoint.app"
-/bin/rm -rf "/Applications/Microsoft Outlook.app"
-/bin/rm -rf "/Applications/Microsoft OneNote.app"
-/bin/rm -rf "/Applications/OneDrive.app"
-/bin/rm -rf "/Applications/Microsoft Teams.app"
+removePathList \
+	"/Applications/Microsoft Word.app" \
+	"/Applications/Microsoft Excel.app" \
+	"/Applications/Microsoft PowerPoint.app" \
+	"/Applications/Microsoft Outlook.app" \
+	"/Applications/Microsoft OneNote.app" \
+	"/Applications/OneDrive.app" \
+	"/Applications/Microsoft Teams.app"
 
 echo "Office-Reset: Removing app data"
-/bin/rm -rf "/Library/Application Support/Microsoft/MAU2.0"
-/bin/rm -rf "/Library/Application Support/Microsoft/MERP2.0"
-/bin/rm -rf "/Library/Application Support/Microsoft/Office365"
-/bin/rm -rf "$HOME/Library/Application Support/Microsoft"
-/bin/rm -rf "$HOME/Library/Application Scripts/com.microsoft.errorreporting"
+removePathList \
+	"/Library/Application Support/Microsoft/MAU2.0" \
+	"/Library/Application Support/Microsoft/MERP2.0" \
+	"/Library/Application Support/Microsoft/Office365" \
+	"$HOME/Library/Application Support/Microsoft" \
+	"$HOME/Library/Application Scripts/com.microsoft.errorreporting" \
+	"/Library/Logs/Microsoft"
 
-/bin/rm -f "/Library/LaunchAgents/com.microsoft.update.agent.plist"
-/bin/rm -f "/Library/LaunchAgents/com.microsoft.OneDriveStandaloneUpdater.plist"
-
-/bin/rm -f "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
-/bin/rm -f "/Library/LaunchDaemons/com.microsoft.office.licensingV2.helper.plist"
-/bin/rm -f "/Library/LaunchDaemons/com.microsoft.OneDriveStandaloneUpdaterDaemon.plist"
-/bin/rm -f "/Library/LaunchDaemons/com.microsoft.OneDriveUpdaterDaemon.plist"
-/bin/rm -f "/Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist"
-
-/bin/rm -f "/Library/PrivilegedHelperTools/com.microsoft.autoupdate.helper"
-/bin/rm -f "/Library/PrivilegedHelperTools/com.microsoft.autoupdate.helpertool"
-/bin/rm -f "/Library/PrivilegedHelperTools/com.microsoft.office.licensingV2.helper"
-
-/bin/rm -rf "/Library/Logs/Microsoft"
+removeFileList \
+	"/Library/LaunchAgents/com.microsoft.update.agent.plist" \
+	"/Library/LaunchAgents/com.microsoft.OneDriveStandaloneUpdater.plist" \
+	"/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist" \
+	"/Library/LaunchDaemons/com.microsoft.office.licensingV2.helper.plist" \
+	"/Library/LaunchDaemons/com.microsoft.OneDriveStandaloneUpdaterDaemon.plist" \
+	"/Library/LaunchDaemons/com.microsoft.OneDriveUpdaterDaemon.plist" \
+	"/Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist" \
+	"/Library/PrivilegedHelperTools/com.microsoft.autoupdate.helper" \
+	"/Library/PrivilegedHelperTools/com.microsoft.autoupdate.helpertool" \
+	"/Library/PrivilegedHelperTools/com.microsoft.office.licensingV2.helper"
 
 # OneDriveFolder=$(/bin/ls "$HOME" | grep 'OneDrive' --max-count=1)
 # if [ "$OneDriveFolder" != "" ]; then
@@ -115,90 +190,87 @@ echo "Office-Reset: Removing app data"
 #	fi
 # fi
 
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.shared.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.office.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.Word.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.Excel.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.Powerpoint.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.Outlook.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.onenote.mac.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.OneDrive-mac.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.OneDrive.plist"
-/bin/rm -f "$HOME/Library/Preferences/com.microsoft.teams.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.autoupdate.fba.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.shared.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.office.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.Word.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.Excel.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.Powerpoint.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.Outlook.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.onenote.mac.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.OneDrive-mac.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.OneDrive.plist"
-/bin/rm -f "/Library/Preferences/com.microsoft.teams.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.shared.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.office.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.Word.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.Excel.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.Powerpoint.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.Outlook.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.onenote.mac.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.OneDrive-mac.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.OneDrive.plist"
-/bin/rm -f "/Library/Managed Preferences/com.microsoft.teams.plist"
-/bin/rm -f "/var/root/Library/Preferences/com.microsoft.autoupdate2.plist"
-/bin/rm -f "/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist"
+removeFileList \
+	"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+	"$HOME/Library/Preferences/com.microsoft.shared.plist" \
+	"$HOME/Library/Preferences/com.microsoft.office.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Word.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Excel.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Powerpoint.plist" \
+	"$HOME/Library/Preferences/com.microsoft.Outlook.plist" \
+	"$HOME/Library/Preferences/com.microsoft.onenote.mac.plist" \
+	"$HOME/Library/Preferences/com.microsoft.OneDrive-mac.plist" \
+	"$HOME/Library/Preferences/com.microsoft.OneDrive.plist" \
+	"$HOME/Library/Preferences/com.microsoft.teams.plist" \
+	"/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+	"/Library/Preferences/com.microsoft.shared.plist" \
+	"/Library/Preferences/com.microsoft.office.plist" \
+	"/Library/Preferences/com.microsoft.Word.plist" \
+	"/Library/Preferences/com.microsoft.Excel.plist" \
+	"/Library/Preferences/com.microsoft.Powerpoint.plist" \
+	"/Library/Preferences/com.microsoft.Outlook.plist" \
+	"/Library/Preferences/com.microsoft.onenote.mac.plist" \
+	"/Library/Preferences/com.microsoft.OneDrive-mac.plist" \
+	"/Library/Preferences/com.microsoft.OneDrive.plist" \
+	"/Library/Preferences/com.microsoft.teams.plist" \
+	"/Library/Managed Preferences/com.microsoft.shared.plist" \
+	"/Library/Managed Preferences/com.microsoft.office.plist" \
+	"/Library/Managed Preferences/com.microsoft.Word.plist" \
+	"/Library/Managed Preferences/com.microsoft.Excel.plist" \
+	"/Library/Managed Preferences/com.microsoft.Powerpoint.plist" \
+	"/Library/Managed Preferences/com.microsoft.Outlook.plist" \
+	"/Library/Managed Preferences/com.microsoft.onenote.mac.plist" \
+	"/Library/Managed Preferences/com.microsoft.OneDrive-mac.plist" \
+	"/Library/Managed Preferences/com.microsoft.OneDrive.plist" \
+	"/Library/Managed Preferences/com.microsoft.teams.plist" \
+	"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist"
 
-/bin/rm -rf "$HOME/Library/Caches/com.microsoft.autoupdate2"
-/bin/rm -rf "$HOME/Library/Caches/com.microsoft.autoupdate.fba"
-/bin/rm -rf "$HOME/Library/Caches/Microsoft"
-
-/bin/rm -rf "$HOME/Library/Group Containers/UBF8T346G9.Office"
-/bin/rm -rf "$HOME/Library/Group Containers/UBF8T346G9.ms"
-/bin/rm -rf "$HOME/Library/Group Containers/UBF8T346G9.OfficeOsfWebHost"
-/bin/rm -rf "$HOME/Library/Group Containers/group.com.microsoft"
+removePathList \
+	"$HOME/Library/Caches/com.microsoft.autoupdate2" \
+	"$HOME/Library/Caches/com.microsoft.autoupdate.fba" \
+	"$HOME/Library/Caches/Microsoft" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office" \
+	"$HOME/Library/Group Containers/UBF8T346G9.ms" \
+	"$HOME/Library/Group Containers/UBF8T346G9.OfficeOsfWebHost" \
+	"$HOME/Library/Group Containers/group.com.microsoft"
 
 echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
 
 echo "Office-Reset: Removing package receipts"
-/usr/sbin/pkgutil --forget com.microsoft.Word
-/usr/sbin/pkgutil --forget com.microsoft.Excel
-/usr/sbin/pkgutil --forget com.microsoft.Powerpoint
-/usr/sbin/pkgutil --forget com.microsoft.Outlook
-/usr/sbin/pkgutil --forget com.microsoft.onenote.mac
-/usr/sbin/pkgutil --forget com.microsoft.OneDrive-mac
+forgetReceiptList \
+	com.microsoft.Word \
+	com.microsoft.Excel \
+	com.microsoft.Powerpoint \
+	com.microsoft.Outlook \
+	com.microsoft.onenote.mac \
+	com.microsoft.OneDrive-mac \
+	com.microsoft.package.Microsoft_Word.app \
+	com.microsoft.package.Microsoft_Excel.app \
+	com.microsoft.package.Microsoft_PowerPoint.app \
+	com.microsoft.package.Microsoft_Outlook.app \
+	com.microsoft.package.Microsoft_OneNote.app \
+	com.microsoft.package.Microsoft_AutoUpdate.app \
+	com.microsoft.package.Microsoft_AU_Bootstrapper.app \
+	com.microsoft.package.Proofing_Tools \
+	com.microsoft.package.Fonts \
+	com.microsoft.package.DFonts \
+	com.microsoft.package.Frameworks \
+	com.microsoft.pkg.licensing \
+	com.microsoft.pkg.licensing.volume \
+	com.microsoft.teams \
+	com.microsoft.OneDrive
 
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_Word.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_Excel.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_PowerPoint.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_Outlook.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_OneNote.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_AutoUpdate.app
-/usr/sbin/pkgutil --forget com.microsoft.package.Microsoft_AU_Bootstrapper.app
+removeFileList \
+	"/Library/Preferences/com.microsoft.office.licensingV2.backup" \
+	"/Library/Preferences/com.microsoft.autoupdate2.plist" \
+	"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
+	"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
+	"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+	"$HOME/Library/Cookies/com.microsoft.teams.binarycookies"
 
-/usr/sbin/pkgutil --forget com.microsoft.package.Proofing_Tools
-/usr/sbin/pkgutil --forget com.microsoft.package.Fonts
-/usr/sbin/pkgutil --forget com.microsoft.package.DFonts
-/usr/sbin/pkgutil --forget com.microsoft.package.Frameworks
-
-/usr/sbin/pkgutil --forget com.microsoft.pkg.licensing
-/usr/sbin/pkgutil --forget com.microsoft.pkg.licensing.volume
-
-/usr/sbin/pkgutil --forget com.microsoft.teams
-
-/usr/sbin/pkgutil --forget com.microsoft.OneDrive
-
-/bin/rm -f "/Library/Preferences/com.microsoft.office.licensingV2.backup"
-/bin/rm -f "/Library/Preferences/com.microsoft.autoupdate2.plist"
-
-/bin/rm -f "$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies"
-/bin/rm -f "$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies"
-/bin/rm -f "$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies"
-/bin/rm -f "$HOME/Library/Cookies/com.microsoft.teams.binarycookies"
-
-/bin/rm -rf "/Users/Shared/OnDemandInstaller"
+removePathList "/Users/Shared/OnDemandInstaller"
 
 exit 0

@@ -11,55 +11,77 @@
 # ============================================================
 
 
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
 echo "Office-Reset: Starting postinstall for Reset_Credentials"
 autoload is-at-least
 
+if [[ $EUID -ne 0 ]]; then
+	echo "Office-Reset: This script must be run as root." >&2
+	exit 1
+fi
+
+
 GetLoggedInUser() {
-	LOGGEDIN=$(/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}')
-	if [ "$LOGGEDIN" = "" ]; then
-		echo "$USER"
-	else
-		echo "$LOGGEDIN"
-	fi
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
 }
 
 SetHomeFolder() {
-	HOME=$(dscl . read /Users/"$1" NFSHomeDirectory | cut -d ':' -f2 | cut -d ' ' -f2)
-	if [ "$HOME" = "" ]; then
-		if [ -d "/Users/$1" ]; then
-			HOME="/Users/$1"
-		else
-			HOME=$(eval echo "~$1")
-		fi
+	local target_user="$1"
+
+	LoggedInUserID=""
+	if [[ -z "$target_user" ]]; then
+		HOME="/var/empty"
+		return 0
 	fi
+
+	HOME=$(/usr/bin/dscl . -read "/Users/${target_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk -F': ' 'NR==1 { print $2 }')
+	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
+		HOME="/Users/${target_user}"
+	fi
+	if [[ -z "$HOME" ]]; then
+		HOME="/var/empty"
+		return 1
+	fi
+
+	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
+}
+
+runAsUser() {
+	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
+		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+		return 1
+	fi
+
+	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
 FindEntryOpenTech() {
-	/usr/bin/security find-generic-password -G 'MSOpenTech.ADAL.1' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -G 'MSOpenTech.ADAL.1' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryOfficeData() {
-	/usr/bin/security find-generic-password -G 'Microsoft Office Data' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -G 'Microsoft Office Data' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryHelpShift() {
-	/usr/bin/security find-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryRMSCredential() {
-	/usr/bin/security find-generic-password -l 'MicrosoftOfficeRMSCredential' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'MicrosoftOfficeRMSCredential' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryProtectionService() {
-	/usr/bin/security find-generic-password -l 'MSProtection.framework.service' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'MSProtection.framework.service' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryExchange() {
-	/usr/bin/security find-generic-password -l 'Exchange' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'Exchange' 2> /dev/null 1> /dev/null
 	echo $?
 }
 FindEntryTeamsIdentity() {
-	/usr/bin/security find-generic-password -l 'Microsoft Teams Identities Cache' 2> /dev/null 1> /dev/null
+	runAsUser /usr/bin/security find-generic-password -l 'Microsoft Teams Identities Cache' 2> /dev/null 1> /dev/null
 	echo $?
 }
 
@@ -75,67 +97,71 @@ echo "Office-Reset: Quitting all apps gracefully"
 /usr/bin/pkill -HUP 'Microsoft Outlook'
 /usr/bin/pkill -HUP 'Microsoft OneNote'
 
-KeychainHasLogin=$(/usr/bin/security list-keychains | grep 'login.keychain')
-if [ "$KeychainHasLogin" = "" ]; then
-	echo "Office-Reset: Adding user login keychain to list"
-	/usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db"
+if [[ -n "$LoggedInUser" ]]; then
+	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
+	if [ "$KeychainHasLogin" = "" ]; then
+		echo "Office-Reset: Adding user login keychain to list"
+		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	fi
+
+	echo "Display list-keychains for logged-in user"
+	runAsUser /usr/bin/security list-keychains || true
+
+	echo "Office-Reset: Removing keychain entries"
+	runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-internet-password -s 'msoCredentialSchemeADAL' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-internet-password -s 'msoCredentialSchemeLiveId' 2>/dev/null || true
+	while [[ $(FindEntryOpenTech) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1' 2>/dev/null || break
+	done
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 2' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 3' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 2' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 3' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache 2' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.adalcache' 2>/dev/null || true
+	while [[ $(FindEntryOfficeData) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -G 'Microsoft Office Data' 2>/dev/null || break
+	done
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OutlookCore.Secret' 2>/dev/null || true
+
+	while [[ $(FindEntryHelpShift) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook' 2>/dev/null || break
+	done
+	while [[ $(FindEntryRMSCredential) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential' 2>/dev/null || break
+	done
+	while [[ $(FindEntryProtectionService) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'MSProtection.framework.service' 2>/dev/null || break
+	done
+
+	while [[ $(FindEntryExchange) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'Exchange' 2>/dev/null || break
+	done
+
+	while [[ $(FindEntryTeamsIdentity) -eq 0 ]]; do
+		runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams Identities Cache' 2>/dev/null || break
+	done
+	runAsUser /usr/bin/security delete-generic-password -l 'Teams Safe Storage' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams (work or school) Safe Storage' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'teamsIv' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'teamsKey' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.helper.HockeySDK' 2>/dev/null || true
+
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies' 2>/dev/null || true
+	runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
+else
+	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-
-echo "Display list-keychains for logged-in user"
-/usr/bin/security list-keychains
-
-echo "Office-Reset: Removing keychain entries"
-/usr/bin/security delete-generic-password -s 'OneAuthAccount'
-
-/usr/bin/security delete-internet-password -s 'msoCredentialSchemeADAL'
-/usr/bin/security delete-internet-password -s 'msoCredentialSchemeLiveId'
-while [[ $(FindEntryOpenTech) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -G 'MSOpenTech.ADAL.1'
-done
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 2'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Cache 3'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 2'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Identities Settings 3'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache'
-/usr/bin/security delete-generic-password -l 'Microsoft Office Ticket Cache 2'
-/usr/bin/security delete-generic-password -l 'com.microsoft.adalcache'
-while [[ $(FindEntryOfficeData) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -G 'Microsoft Office Data'
-done
-/usr/bin/security delete-generic-password -l 'com.microsoft.OutlookCore.Secret'
-
-while [[ $(FindEntryHelpShift) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -l 'com.helpshift.data_com.microsoft.Outlook'
-done
-while [[ $(FindEntryRMSCredential) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -l 'MicrosoftOfficeRMSCredential'
-done
-while [[ $(FindEntryProtectionService) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -l 'MSProtection.framework.service'
-done
-
-while [[ $(FindEntryExchange) -eq 0 ]]; do
-	/usr/bin/security delete-generic-password -l 'Exchange'
-done
-
-while [[ $(FindEntryTeamsIdentity) -eq 0 ]]; do
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'Microsoft Teams Identities Cache'
-done
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'Teams Safe Storage'
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'Microsoft Teams (work or school) Safe Storage'
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'teamsIv'
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'teamsKey'
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.HockeySDK'
-/usr/bin/sudo -u $LoggedInUser /usr/bin/security delete-generic-password -l 'com.microsoft.teams.helper.HockeySDK'
-
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK'
-/usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK'
-/usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1'
-/usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential'
-/usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies'
-/usr/bin/security delete-generic-password -s 'OneAuthAccount'
 
 echo "Office-Reset: Removing credential and license files"
 /bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/mip_policy
@@ -169,33 +195,35 @@ echo "Office-Reset: Removing credential and license files"
 
 echo "Office-Reset: Changing preferences"
 if [ -e "$HOME/Library/Preferences/com.microsoft.office.plist" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults delete $HOME/Library/Preferences/com.microsoft.office OfficeActivationEmailAddress
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office OfficeAutoSignIn -bool TRUE
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenFREDialog -bool TRUE
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenEnterpriseFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults delete $HOME/Library/Preferences/com.microsoft.office OfficeActivationEmailAddress 2>/dev/null || true
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office OfficeAutoSignIn -bool TRUE
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenEnterpriseFREDialog -bool TRUE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences" ]; then
-	/usr/bin/sudo -u $LoggedInUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 
-KEYCHAIN_2_PATH=$(find $HOME/Library/Keychains/**/keychain-2.db)
-/usr/bin/sqlite3 $KEYCHAIN_2_PATH "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';"
+KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
+if [[ -n "$KEYCHAIN_2_PATH" ]]; then
+	/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
+fi
 
 /bin/rm -f $HOME/Library/Keychains/Microsoft_Entity_Certificates-db
 /bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg
 
-/usr/bin/killall cfprefsd
+runAsUser /usr/bin/killall cfprefsd >/dev/null 2>&1 || true
 
 exit 0
