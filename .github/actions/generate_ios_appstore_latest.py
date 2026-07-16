@@ -211,7 +211,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 def fetch_app_data(url):
     logging.info(f"Fetching data from {url}")
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     data = response.json()
     # logging.info(f"Pulled data: {json.dumps(data, indent=4)}") # Uncomment to see the full JSON response
     return data['results'][0] if 'results' in data and len(data['results']) > 0 else {}

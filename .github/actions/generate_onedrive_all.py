@@ -5,6 +5,7 @@ from datetime import datetime
 from xml.dom.minidom import parseString
 import logging
 import subprocess
+import shlex
 import os
 import json
 import yaml  # Add this import
@@ -15,7 +16,7 @@ import pytz  # Add this import
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def fetch_url_content(url):
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     return response.content
 
@@ -27,7 +28,7 @@ def calculate_hash(content, hash_type="sha256"):
     return None
 
 def extract_from_xml(url, key):
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     tree = ET.fromstring(response.content)
     logging.info(f"Parsing XML from {url} for key '{key}'")
@@ -49,7 +50,7 @@ def fetch_linked_id_version(url):
     try:
         # Corrected the curl command to fetch the version
         result = subprocess.run(
-            f"curl -fsIL \"{url}\" | grep -i location: | cut -d '/' -f 6 | cut -d '.' -f 1-3",
+            f"curl -fsIL {shlex.quote(url)} | grep -i location: | cut -d '/' -f 6 | cut -d '.' -f 1-3",
             capture_output=True,
             text=True,
             shell=True

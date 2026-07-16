@@ -20,7 +20,7 @@ url = 'https://learn.microsoft.com/en-us/officeupdates/release-notes-office-for-
 
 # Fetch the HTML content
 logging.info('Fetching HTML content from URL: %s', url)
-response = requests.get(url)
+response = requests.get(url, timeout=30)
 html_data = response.text
 logging.info('HTML content fetched successfully')
 

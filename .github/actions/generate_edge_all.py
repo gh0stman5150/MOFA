@@ -15,7 +15,7 @@ import hashlib
 eastern = pytz.timezone('US/Eastern')
 
 def fetch_edge_latest(channel, url):
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     
     xml_content = response.text
@@ -118,7 +118,7 @@ def update_last_updated_in_xml(file_path):
     print(f"Updated file '{file_path}' with last_updated.")
 
 def fetch_edge_insider_canary_version(url):
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     
     releases = response.json()
@@ -162,7 +162,7 @@ def create_canary_xml(info, output_file):
     print(f"Canary file '{output_file}' written successfully.")
 
 def fetch_edge_insider_version(url, channel):
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     
     releases = response.json()
@@ -186,7 +186,7 @@ def fetch_edge_insider_version(url, channel):
 
 def generate_hashes(location_url):
     try:
-        response = requests.get(location_url, stream=True)
+        response = requests.get(location_url, stream=True, timeout=30)
         response.raise_for_status()
         
         sha1 = hashlib.sha1()

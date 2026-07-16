@@ -20,7 +20,7 @@ def scrape_office_mac_updates(url):
         logging.info("Starting the scraping process.")
 
         # Send a GET request to the URL
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()  # Raise an exception for HTTP errors
         logging.info("Successfully fetched the URL.")
 
