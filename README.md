@@ -222,7 +222,8 @@ For a detailed guide on how to create and manage PLIST files, refer to the [How 
 
 ## **Contributing and Providing Feedback**
 
-Before submitting generator changes, install the exact versions in `.github/requirements.lock` and run `python -m pytest -q`. The hourly workflow runs every generator, rejects logged errors or inconsistent XML/YAML/JSON output, and creates at most one commit when content beyond generated timestamps changes.
+Before submitting generator changes, install the exact versions in `.github/requirements.txt` and run `python -m pytest -q`. The hourly workflow runs every generator, rejects logged errors or inconsistent XML/YAML/JSON output, and creates or updates one reviewable pull request when content beyond generated timestamps changes.
+Enable **Allow GitHub Actions to create and approve pull requests** in the repository's Actions settings so the scheduled update job can open that pull request.
 
 We warmly welcome your contributions and feedback to **macadmins_msft**! Here’s how you can get involved:
 

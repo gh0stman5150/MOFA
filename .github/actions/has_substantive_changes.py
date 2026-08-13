@@ -30,10 +30,20 @@ def from_head(path: Path) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def canonical_data(value: Any) -> bytes:
+def strip_generated_timestamps(value: Any) -> Any:
     if isinstance(value, dict):
-        value = dict(value)
-        value.pop("last_updated", None)
+        return {
+            key: strip_generated_timestamps(item)
+            for key, item in value.items()
+            if key not in {"last_updated", "lastUpdated"}
+        }
+    if isinstance(value, list):
+        return [strip_generated_timestamps(item) for item in value]
+    return value
+
+
+def canonical_data(value: Any) -> bytes:
+    value = strip_generated_timestamps(value)
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -47,9 +57,10 @@ def normalize(path: Path, content: bytes) -> bytes:
         return canonical_data(yaml.safe_load(content))
     if suffix == ".xml":
         root = ET.fromstring(content)
-        direct_timestamp = root.find("last_updated")
-        if direct_timestamp is not None:
-            root.remove(direct_timestamp)
+        for parent in root.iter():
+            for child in list(parent):
+                if child.tag in {"last_updated", "lastUpdated"}:
+                    parent.remove(child)
         return ET.tostring(root, encoding="utf-8")
     return content
 
