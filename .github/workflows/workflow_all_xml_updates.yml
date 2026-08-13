@@ -1,204 +1,86 @@
-name: Auto Update XML/Readme Files Every Hour
+name: Validate and update generated data
 
 on:
   schedule:
-    - cron: '3 */1 * * *' # Runs every 1 hour
+    - cron: "3 * * * *"
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/actions/**"
+      - ".github/workflows/workflow_all_xml_updates.yml"
+      - ".github/requirements.lock"
+      - "tests/**"
+      - "latest_raw_files/**"
+  pull_request:
+    paths:
+      - ".github/actions/**"
+      - ".github/workflows/workflow_all_xml_updates.yml"
+      - ".github/requirements.lock"
+      - "tests/**"
+      - "latest_raw_files/**"
+
+concurrency:
+  group: mofa-generated-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
 
 jobs:
-  update_files:
+  validate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
-
-      - name: Set up Python environment
-        uses: actions/setup-python@v2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.9'
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/requirements.lock
+      - name: Install locked dependencies
+        run: python -m pip install --disable-pip-version-check -r .github/requirements.lock
+      - name: Compile generators
+        run: python -m compileall -q .github/actions tests
+      - name: Run tests
+        run: python -m pytest -q
 
-      - name: Install dependencies
+  update:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/requirements.lock
+      - name: Install locked dependencies
+        run: python -m pip install --disable-pip-version-check -r .github/requirements.lock
+      - name: Generate all datasets
+        run: python .github/actions/run_generators.py
+      - name: Validate generated datasets
+        run: python -m pytest -q
+      - name: Commit substantive changes once
         run: |
-          pip install requests pytz pyyaml bs4
-
-      - name: Run update script for standalone XML
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_standalone_latest.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for standalone XML (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating standalone XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for standalone update history
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_standalone_update_history.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for standalone update history (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating standalone update history XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for standalone CVE history
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_standalone_cve_history.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for standalone CVE history (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating standalone CVE history XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for macOS XML
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_appstore_latest.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for macOS XML (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating macOS XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for iOS XML
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_ios_appstore_latest.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for iOS XML (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating iOS XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for OneDrive XML
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_onedrive_all.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for OneDrive XML (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating iOS XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for macOS standalone preview
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_standalone_preview.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for macOS standalone preview (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating macOS standalone preview XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for macOS standalone beta
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_macos_standalone_beta.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for macOS standalone beta (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating macOS standalone beta XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for Edge XML
-        continue-on-error: true
-        run: |
-          python3 .github/actions/generate_edge_all.py
-          git add latest_raw_files/*
-
-      - name: Commit changes for macOS Edge All (if any)
-        continue-on-error: true
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto updating macOS Edge All XML, YAML, JSON files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for RSS feed
-        run: |
-          python3 .github/actions/generate_macos_standalone_rss.py
-
-      - name: Commit changes for RSS feed (if any)
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add latest_raw_files/*
-          git commit -m "Auto Updating RSS Feed Files" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
-
-      - name: Run update script for README
-        run: |
-          python3 .github/actions/update_readme.py
-
-      - name: Commit changes for README (if any)
-        env:
-          TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add README.md
-          git commit -m "Auto Updating README File" || echo "No changes to commit"
-          git push https://github-actions[bot]:$TOKEN@github.com/cocopuff2u/macadmins_msft.git
+          if git diff --quiet -- README.md latest_raw_files; then
+            echo "No generated changes."
+            exit 0
+          fi
+          if ! python .github/actions/has_substantive_changes.py; then
+            echo "Only generated timestamps changed; no commit needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md latest_raw_files
+          git commit -m "chore: update generated Microsoft release data"
+          git push

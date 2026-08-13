@@ -1,4 +1,4 @@
-import requests
+from http_client import get as http_get
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -118,7 +118,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 def fetch_app_data(url):
     logging.info(f"Fetching data from {url}")
-    response = requests.get(url, timeout=30)
+    response = http_get(url, timeout=30)
     data = response.json()
     # logging.info(f"Pulled data: {json.dumps(data, indent=4)}")  # Comment out or remove this line to hide JSON URL output
     return data['results'][0] if 'results' in data and len(data['results']) > 0 else {}

@@ -1,4 +1,4 @@
-import requests
+from http_client import get as http_get
 import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -16,7 +16,7 @@ import pytz  # Add this import
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def fetch_url_content(url):
-    response = requests.get(url, timeout=30)
+    response = http_get(url, timeout=30)
     response.raise_for_status()
     return response.content
 
@@ -28,7 +28,7 @@ def calculate_hash(content, hash_type="sha256"):
     return None
 
 def extract_from_xml(url, key):
-    response = requests.get(url, timeout=30)
+    response = http_get(url, timeout=30)
     response.raise_for_status()
     tree = ET.fromstring(response.content)
     logging.info(f"Parsing XML from {url} for key '{key}'")

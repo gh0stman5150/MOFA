@@ -1,5 +1,5 @@
 from bs4 import BeautifulSoup
-import requests
+from http_client import get as http_get
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import logging
@@ -20,7 +20,7 @@ url = 'https://learn.microsoft.com/en-us/officeupdates/release-notes-office-for-
 
 # Fetch the HTML content
 logging.info('Fetching HTML content from URL: %s', url)
-response = requests.get(url, timeout=30)
+response = http_get(url, timeout=30)
 html_data = response.text
 logging.info('HTML content fetched successfully')
 

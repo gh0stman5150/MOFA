@@ -1,5 +1,5 @@
 import os
-import requests
+from http_client import get as http_get
 import xml.etree.ElementTree as ET
 from hashlib import sha256, sha1
 from xml.dom import minidom
@@ -366,7 +366,7 @@ def fetch_and_process(app_name, config):
 
             list_url = f"{base}/public_releases"
             logging.info(f"Fetching App Center releases for {app_name} from {list_url}...")
-            list_resp = requests.get(list_url, timeout=30)
+            list_resp = http_get(list_url, timeout=30)
             list_resp.raise_for_status()
             releases = list_resp.json()
 
@@ -380,7 +380,7 @@ def fetch_and_process(app_name, config):
 
             detail_url = f"{base}/releases/{release_id}"
             logging.info(f"Fetching App Center release details for {app_name} from {detail_url}...")
-            detail_resp = requests.get(detail_url, timeout=30)
+            detail_resp = http_get(detail_url, timeout=30)
             detail_resp.raise_for_status()
             info = detail_resp.json()
 
@@ -431,7 +431,7 @@ def fetch_and_process(app_name, config):
             return  # Important: stop here for App Center path
 
         logging.info(f"Fetching data for {app_name} from {config['url']}...")
-        response = requests.get(config["url"], allow_redirects=True, timeout=30)
+        response = http_get(config["url"], allow_redirects=True, timeout=30)
         response.raise_for_status()
 
         logging.info(f"Response status code: {response.status_code}")
@@ -560,7 +560,7 @@ def compute_sha1(url):
     try:
         logging.info(f"Computing SHA1 for {url}...")
         # Use allow_redirects=True to follow redirects
-        response = requests.get(url, stream=True, allow_redirects=True, timeout=30)
+        response = http_get(url, stream=True, allow_redirects=True, timeout=30)
         response.raise_for_status()  # Raise exception for HTTP errors
         hasher = sha1()
         for chunk in response.iter_content(chunk_size=8192):
@@ -577,7 +577,7 @@ def compute_sha256(url):
     try:
         logging.info(f"Computing SHA256 for {url}...")
         # Use allow_redirects=True to follow redirects
-        response = requests.get(url, stream=True, allow_redirects=True, timeout=30)
+        response = http_get(url, stream=True, allow_redirects=True, timeout=30)
         response.raise_for_status()  # Raise exception for HTTP errors
         hasher = sha256()
         for chunk in response.iter_content(chunk_size=8192):

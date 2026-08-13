@@ -1,5 +1,5 @@
 import os
-import requests
+from http_client import get as http_get
 import xml.etree.ElementTree as ET
 from hashlib import sha256, sha1
 from xml.dom import minidom
@@ -443,7 +443,7 @@ def fetch_and_process(app_name, config):
     try:
         logging.info("-" * 50)
         logging.info(f"Fetching data for {app_name} from {config['url']}...")
-        response = requests.get(config["url"], allow_redirects=True, timeout=30)
+        response = http_get(config["url"], allow_redirects=True, timeout=30)
         response.raise_for_status()
 
         logging.info(f"Response status code: {response.status_code}")
@@ -595,7 +595,7 @@ def compute_sha1(url):
     try:
         logging.info(f"Computing SHA1 for {url}...")
         # Use allow_redirects=True to follow redirects
-        response = requests.get(url, stream=True, allow_redirects=True, timeout=30)
+        response = http_get(url, stream=True, allow_redirects=True, timeout=30)
         response.raise_for_status()  # Raise exception for HTTP errors
         hasher = sha1()
         for chunk in response.iter_content(chunk_size=8192):
@@ -612,7 +612,7 @@ def compute_sha256(url):
     try:
         logging.info(f"Computing SHA256 for {url}...")
         # Use allow_redirects=True to follow redirects
-        response = requests.get(url, stream=True, allow_redirects=True, timeout=30)
+        response = http_get(url, stream=True, allow_redirects=True, timeout=30)
         response.raise_for_status()  # Raise exception for HTTP errors
         hasher = sha256()
         for chunk in response.iter_content(chunk_size=8192):
