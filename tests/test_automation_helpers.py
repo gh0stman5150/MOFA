@@ -54,7 +54,11 @@ def test_nested_xml_timestamp_is_not_substantive(tmp_path: Path):
     )
 
 
-def test_runner_detects_generator_errors_case_insensitively():
+def test_runner_detects_generator_errors():
     assert run_generators.ERROR_PATTERN.search("Error processing remote feed: timeout")
+    assert run_generators.ERROR_PATTERN.search("error processing remote feed: timeout")
     assert run_generators.ERROR_PATTERN.search("2026-08-13 - ERROR - request failed")
+    assert not run_generators.ERROR_PATTERN.search(
+        "2026-08-13 - INFO - Error computing SHA256 for https://example.test: timeout"
+    )
     assert not run_generators.ERROR_PATTERN.search("Completed without errors")

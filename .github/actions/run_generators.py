@@ -21,7 +21,9 @@ GENERATORS = (
     "generate_macos_standalone_rss.py",
     "update_readme.py",
 )
-ERROR_PATTERN = re.compile(r"(?im)(?:^| - )(?:ERROR|CRITICAL)\b|^Traceback")
+ERROR_PATTERN = re.compile(
+    r"(?mi)^Traceback\b|^Error\b|^Critical\b| - (?:ERROR|CRITICAL) - "
+)
 
 
 def main() -> int:
