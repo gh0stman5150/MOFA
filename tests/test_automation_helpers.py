@@ -13,6 +13,7 @@ import run_generators
 ROOT = Path(__file__).resolve().parents[1]
 LATEST_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_latest.py"
 PREVIEW_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_preview.py"
+BETA_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_beta.py"
 
 
 def load_hash_functions(generator_path: Path):
@@ -105,6 +106,22 @@ def test_preview_generator_does_not_log_hash_failures_as_errors(caplog):
         raise RuntimeError("network failure")
 
     compute_sha1, compute_sha256, namespace = load_hash_functions(PREVIEW_GENERATOR)
+    namespace["http_get"] = fail_http_get
+
+    with caplog.at_level("WARNING"):
+        assert compute_sha1("https://example.test/file.pkg") == "N/A"
+        assert compute_sha256("https://example.test/file.pkg") == "N/A"
+
+    assert "Error computing SHA1" in caplog.text
+    assert "Error computing SHA256" in caplog.text
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
+
+
+def test_beta_generator_does_not_log_hash_failures_as_errors(caplog):
+    def fail_http_get(*args, **kwargs):
+        raise RuntimeError("network failure")
+
+    compute_sha1, compute_sha256, namespace = load_hash_functions(BETA_GENERATOR)
     namespace["http_get"] = fail_http_get
 
     with caplog.at_level("WARNING"):
