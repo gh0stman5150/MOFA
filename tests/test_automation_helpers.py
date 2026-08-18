@@ -113,4 +113,4 @@ def test_preview_generator_does_not_log_hash_failures_as_errors(caplog):
 
     assert "Error computing SHA1" in caplog.text
     assert "Error computing SHA256" in caplog.text
-    assert "ERROR" not in caplog.text
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
