@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import ast
 import json
+import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import has_substantive_changes
 import run_generators
+
+ROOT = Path(__file__).resolve().parents[1]
+LATEST_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_latest.py"
+
+
+def load_latest_hash_functions():
+    module = ast.parse(LATEST_GENERATOR.read_text(encoding="utf-8"), filename=str(LATEST_GENERATOR))
+    functions = [
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in {"compute_sha1", "compute_sha256"}
+    ]
+    namespace = {"logging": logging}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(LATEST_GENERATOR), "exec"), namespace)
+    return namespace["compute_sha1"], namespace["compute_sha256"], namespace
 
 
 def test_json_timestamp_is_not_substantive(tmp_path: Path):
@@ -62,3 +79,17 @@ def test_runner_detects_generator_errors():
         "2026-08-13 - INFO - Error computing SHA256 for https://example.test: timeout"
     )
     assert not run_generators.ERROR_PATTERN.search("Completed without errors")
+
+
+def test_latest_generator_skips_hash_requests_for_na_urls(monkeypatch, caplog):
+    def fail_http_get(*args, **kwargs):
+        raise AssertionError("http_get should not be called for N/A URLs")
+
+    compute_sha1, compute_sha256, namespace = load_latest_hash_functions()
+    namespace["http_get"] = fail_http_get
+
+    with caplog.at_level("ERROR"):
+        assert compute_sha1("N/A") == "N/A"
+        assert compute_sha256(" N/A ") == "N/A"
+
+    assert "Error computing SHA" not in caplog.text
