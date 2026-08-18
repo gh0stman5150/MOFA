@@ -592,6 +592,8 @@ def process_json_data(app_data, config):
 
 # Function to compute SHA1 hash
 def compute_sha1(url):
+    if not isinstance(url, str) or not url.strip() or url.strip().upper() == "N/A":
+        return "N/A"
     try:
         logging.info(f"Computing SHA1 for {url}...")
         # Use allow_redirects=True to follow redirects
@@ -609,6 +611,8 @@ def compute_sha1(url):
 
 # Function to compute SHA256 hash
 def compute_sha256(url):
+    if not isinstance(url, str) or not url.strip() or url.strip().upper() == "N/A":
+        return "N/A"
     try:
         logging.info(f"Computing SHA256 for {url}...")
         # Use allow_redirects=True to follow redirects
