@@ -4,6 +4,7 @@ import ast
 import json
 import logging
 import xml.etree.ElementTree as ET
+from hashlib import sha1, sha256
 from pathlib import Path
 
 import has_substantive_changes
@@ -20,7 +21,7 @@ def load_latest_hash_functions():
         for node in module.body
         if isinstance(node, ast.FunctionDef) and node.name in {"compute_sha1", "compute_sha256"}
     ]
-    namespace = {"logging": logging}
+    namespace = {"logging": logging, "sha1": sha1, "sha256": sha256}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(LATEST_GENERATOR), "exec"), namespace)
     return namespace["compute_sha1"], namespace["compute_sha256"], namespace
 
@@ -88,8 +89,11 @@ def test_latest_generator_skips_hash_requests_for_na_urls(monkeypatch, caplog):
     compute_sha1, compute_sha256, namespace = load_latest_hash_functions()
     namespace["http_get"] = fail_http_get
 
+    sentinel_urls = ("N/A", " N/A ", "n/a", "", "   ")
+
     with caplog.at_level("ERROR"):
-        assert compute_sha1("N/A") == "N/A"
-        assert compute_sha256(" N/A ") == "N/A"
+        for url in sentinel_urls:
+            assert compute_sha1(url) == "N/A"
+            assert compute_sha256(url) == "N/A"
 
     assert "Error computing SHA" not in caplog.text
