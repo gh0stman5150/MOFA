@@ -12,17 +12,18 @@ import run_generators
 
 ROOT = Path(__file__).resolve().parents[1]
 LATEST_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_latest.py"
+PREVIEW_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_preview.py"
 
 
-def load_latest_hash_functions():
-    module = ast.parse(LATEST_GENERATOR.read_text(encoding="utf-8"), filename=str(LATEST_GENERATOR))
+def load_hash_functions(generator_path: Path):
+    module = ast.parse(generator_path.read_text(encoding="utf-8"), filename=str(generator_path))
     functions = [
         node
         for node in module.body
         if isinstance(node, ast.FunctionDef) and node.name in {"compute_sha1", "compute_sha256"}
     ]
     namespace = {"logging": logging, "sha1": sha1, "sha256": sha256}
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(LATEST_GENERATOR), "exec"), namespace)
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(generator_path), "exec"), namespace)
     return namespace["compute_sha1"], namespace["compute_sha256"], namespace
 
 
@@ -86,7 +87,7 @@ def test_latest_generator_skips_hash_requests_for_na_urls(monkeypatch, caplog):
     def fail_http_get(*args, **kwargs):
         raise AssertionError("http_get should not be called for N/A URLs")
 
-    compute_sha1, compute_sha256, namespace = load_latest_hash_functions()
+    compute_sha1, compute_sha256, namespace = load_hash_functions(LATEST_GENERATOR)
     namespace["http_get"] = fail_http_get
 
     sentinel_urls = ("N/A", " N/A ", "n/a", "", "   ")
@@ -97,3 +98,19 @@ def test_latest_generator_skips_hash_requests_for_na_urls(monkeypatch, caplog):
             assert compute_sha256(url) == "N/A"
 
     assert "Error computing SHA" not in caplog.text
+
+
+def test_preview_generator_does_not_log_hash_failures_as_errors(caplog):
+    def fail_http_get(*args, **kwargs):
+        raise RuntimeError("network failure")
+
+    compute_sha1, compute_sha256, namespace = load_hash_functions(PREVIEW_GENERATOR)
+    namespace["http_get"] = fail_http_get
+
+    with caplog.at_level("WARNING"):
+        assert compute_sha1("https://example.test/file.pkg") == "N/A"
+        assert compute_sha256("https://example.test/file.pkg") == "N/A"
+
+    assert "Error computing SHA1" in caplog.text
+    assert "Error computing SHA256" in caplog.text
+    assert "ERROR" not in caplog.text

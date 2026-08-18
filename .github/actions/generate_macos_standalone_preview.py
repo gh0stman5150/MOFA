@@ -481,7 +481,7 @@ def compute_sha1(url):
         logging.info(f"SHA1 for {url}: {sha1_hash}")
         return sha1_hash
     except Exception as e:
-        logging.error(f"Error computing SHA1 for {url}: {e}")
+        logging.warning(f"Error computing SHA1 for {url}: {e}")
         return "N/A"
 
 # Function to compute SHA256 hash
@@ -498,7 +498,7 @@ def compute_sha256(url):
         logging.info(f"SHA256 for {url}: {sha256_hash}")
         return sha256_hash
     except Exception as e:
-        logging.error(f"Error computing SHA256 for {url}: {e}")
+        logging.warning(f"Error computing SHA256 for {url}: {e}")
         return "N/A"
 
 def add_to_combined_xml(app_name, data):
