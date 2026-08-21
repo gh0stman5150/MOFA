@@ -345,10 +345,10 @@ def read_existing_xml(filename):
         logging.info(f"Successfully read existing XML data from {filename}.")
         return existing_data
     except ET.ParseError as e:
-        logging.error(f"XML parsing error in {filename}: {e}")
+        logging.warning(f"XML parsing error in {filename}: {e}")
         return {}
     except Exception as e:
-        logging.error(f"Error reading existing XML from {filename}: {e}")
+        logging.warning(f"Error reading existing XML from {filename}: {e}")
         return {}
 
 # Read existing data from macos_standalone_latest.xml
@@ -496,7 +496,7 @@ def fetch_and_process(app_name, config):
             add_to_combined_xml(app_name, extracted_data)
 
     except Exception as e:
-        logging.error(f"Error processing {app_name}: {e}")
+        logging.warning(f"Error processing {app_name}: {e}")
         # Use existing data if processing fails
         if app_name in existing_data:
             logging.info(f"Reverting to existing data for {app_name}.")

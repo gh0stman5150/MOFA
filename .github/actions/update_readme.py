@@ -110,7 +110,7 @@ def parse_onedrive_xml(file_path):
         return onedrive_data
 
     except Exception as e:
-        logging.error(f"Error parsing OneDrive XML: {e}")
+        logging.warning(f"Error parsing OneDrive XML: {e}")
         return {
             "name": "OneDrive",
             "short_version": "Unknown",
@@ -160,7 +160,7 @@ def parse_edge_xml(file_path):
             return None
 
     except Exception as e:
-        logging.error(f"Error parsing Edge XML: {e}")
+        logging.warning(f"Error parsing Edge XML: {e}")
         return None
 
 def get_onedrive_package_detail(onedrive_data, ring_name, detail):
