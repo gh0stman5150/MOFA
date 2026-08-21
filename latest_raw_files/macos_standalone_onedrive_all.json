@@ -1,83 +1,83 @@
 {
   "latest": {
-    "last_updated": "April 01, 2026 04:19 PM EDT",
+    "last_updated": "August 20, 2026 01:19 PM EDT",
     "package": [
       {
         "name": "Production Ring",
-        "short_version": "26.045.0308",
+        "short_version": "26.145.0728",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
-        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.045.0308.0001/universal/OneDrive.pkg",
-        "full_update_sha1": "f2006c8511439d1813010e6d6f2f11850d3c263e",
-        "full_update_sha256": "42cad93dca2d45203eaa08e9d11b2622283ea4f2f4f1a68de0833147c293f6c4",
-        "last_updated": "March 27, 2026 12:23 PM EDT"
+        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.145.0728.0010/universal/OneDrive.pkg",
+        "full_update_sha1": "dd7a156e2835b6d4ea487d6da6a60cb7a9a8024f",
+        "full_update_sha256": "e7d1a96a6c79a2d2d64baf84b07af0fab34d181c614ac998b4c37e0e125cf3f1",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "Upcoming Production Ring",
-        "short_version": "26.045.0308",
+        "short_version": "26.145.0728",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
-        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.045.0308.0001/universal/OneDrive.pkg",
-        "full_update_sha1": "f2006c8511439d1813010e6d6f2f11850d3c263e",
-        "full_update_sha256": "42cad93dca2d45203eaa08e9d11b2622283ea4f2f4f1a68de0833147c293f6c4",
-        "last_updated": "March 27, 2026 12:23 PM EDT"
+        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.145.0728.0010/universal/OneDrive.pkg",
+        "full_update_sha1": "dd7a156e2835b6d4ea487d6da6a60cb7a9a8024f",
+        "full_update_sha256": "e7d1a96a6c79a2d2d64baf84b07af0fab34d181c614ac998b4c37e0e125cf3f1",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "Deferred Ring",
-        "short_version": "25.179.0914",
+        "short_version": "26.078.0426",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
         "full_update_download": "https://go.microsoft.com/fwlink/?linkid=861009",
-        "full_update_sha1": "0c3009cc89d8e8cd65152f4c8572462d9b1e144d",
-        "full_update_sha256": "414aec9b3892fe0bf207fe67408072c274d064aadf1ce062473cff91f3d276b0",
-        "last_updated": "January 20, 2026 05:08 PM EST"
+        "full_update_sha1": "6b840a8bad382a4691170f514def87f82721bb58",
+        "full_update_sha256": "c500f9fbc51e856fc890832d6e9352c2c0af6a5400a4c4b3e2e2c0ef48ecbbab",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "Upcoming Deferred  Ring",
-        "short_version": "25.224.1116",
+        "short_version": "26.123.0628",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
         "full_update_download": "https://go.microsoft.com/fwlink/?linkid=861010",
-        "full_update_sha1": "8b03b311d9d951a868fe1e3885c0ecfa152954be",
-        "full_update_sha256": "af9a46aebad03ac57c604bf228d1a140a29d4c57bcf4e95599c2e94f41c917e9",
-        "last_updated": "February 23, 2026 11:41 PM EST"
+        "full_update_sha1": "8f7bb1daf51753f40c4287207bb8c785817bfd20",
+        "full_update_sha256": "cf927ceac76bddb80cf583b60a705b1f9837283adf910a232b4e72d22ba22998",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "Insider Ring",
-        "short_version": "26.045.0308",
+        "short_version": "26.145.0728",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
-        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.045.0308.0001/universal/OneDrive.pkg",
-        "full_update_sha1": "f2006c8511439d1813010e6d6f2f11850d3c263e",
-        "full_update_sha256": "42cad93dca2d45203eaa08e9d11b2622283ea4f2f4f1a68de0833147c293f6c4",
-        "last_updated": "March 27, 2026 12:23 PM EDT"
+        "full_update_download": "https://oneclient.sfx.ms/Mac/Installers/26.145.0728.0009/universal/OneDrive.pkg",
+        "full_update_sha1": "1544b45d4160699078e501f1c56e1ebaf177b4f5",
+        "full_update_sha256": "4f3fdfb8a39789ebb4f64ea07b1fa0a84eb262e4d887b3f448d4efb84d668970",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "Rolling Out (Unknown Use)",
-        "short_version": "26.035.0222",
+        "short_version": "26.145.0728",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
         "full_update_download": "https://go.microsoft.com/fwlink/?linkid=861011",
-        "full_update_sha1": "b66d42b3cdd5ed731cf3761d0de0fb84e9e5a14c",
-        "full_update_sha256": "68008c93814b4f0cf984419fd918977dd9d557d989af9bf37b9f4d382a7c6591",
-        "last_updated": "March 17, 2026 04:21 AM EDT"
+        "full_update_sha1": "1544b45d4160699078e501f1c56e1ebaf177b4f5",
+        "full_update_sha256": "4f3fdfb8a39789ebb4f64ea07b1fa0a84eb262e4d887b3f448d4efb84d668970",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       },
       {
         "name": "App New Version (Unknown Use)",
-        "short_version": "26.032.0217",
+        "short_version": "26.139.0720",
         "application_id": "ONDR18",
         "application_name": "OneDrive.app",
         "CFBundleVersion": "com.microsoft.onedrive",
         "full_update_download": "https://go.microsoft.com/fwlink/?linkid=823060",
-        "full_update_sha1": "59bc81610ccc310be1048ed76f625337480db82b",
-        "full_update_sha256": "36d40f706718214f476c1e45443ef7cc308787643e29dc02a839ee69dc89952e",
-        "last_updated": "March 17, 2026 04:21 AM EDT"
+        "full_update_sha1": "c3694ccf09c93e9d44e34698914dd6b1402257bc",
+        "full_update_sha256": "ace7bb10d77bd9db26131d5d6864a37d712d02eb741bc8d5f62172fa04627d26",
+        "last_updated": "August 20, 2026 01:19 PM EDT"
       }
     ]
   }
