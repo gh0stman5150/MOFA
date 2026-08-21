@@ -40,7 +40,7 @@ def scrape_office_mac_updates(url):
                 break
 
         if not target_table:
-            logging.error("Target table not found on the page.")
+            logging.warning("Target table not found on the page.")
             return
 
         logging.info("Target table found.")
@@ -139,9 +139,9 @@ def scrape_office_mac_updates(url):
         logging.info(f"Data saved to {yaml_file}")
 
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching the URL: {e}")
+        logging.warning(f"Error fetching the URL: {e}")
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logging.warning(f"An error occurred: {e}")
 
 # URL of the webpage to scrape
 url = "https://learn.microsoft.com/en-us/officeupdates/update-history-office-for-mac"

@@ -61,7 +61,7 @@ def fetch_linked_id_version(url):
             return version
         return "N/A"
     except Exception as e:
-        logging.error(f"Error fetching version for URL {url}: {e}")
+        logging.warning(f"Error fetching version for URL {url}: {e}")
         return "N/A"
 
 def load_existing_data(file_path):
@@ -99,7 +99,7 @@ def load_existing_data(file_path):
         logging.warning(f"{file_path} not found. Starting fresh.")
         return {}
     except Exception as e:
-        logging.error(f"Error loading existing data: {e}")
+        logging.warning(f"Error loading existing data: {e}")
         return {}
 
 def has_version_changed(package_name, new_version, existing_data):
@@ -254,7 +254,7 @@ def fetch_package_data(existing_data):
         if version_changed:
             binary_url = extract_from_xml(entry["url"], entry["binary_url_key"])
             if not binary_url:
-                logging.error(f"Binary URL not found for {entry['name']} in {entry['url']}")
+                logging.warning(f"Binary URL not found for {entry['name']} in {entry['url']}")
                 continue
                 
             if not skip_sha_checks():
@@ -341,7 +341,7 @@ def convert_to_json_yaml(xml_file):
         
         return True
     except Exception as e:
-        logging.error(f"Error converting XML to JSON/YAML: {e}")
+        logging.warning(f"Error converting XML to JSON/YAML: {e}")
         return False
 
 def get_package_order_priority(package_name):

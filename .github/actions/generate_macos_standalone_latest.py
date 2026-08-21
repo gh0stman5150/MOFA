@@ -429,10 +429,10 @@ def read_existing_xml(filename):
         logging.info(f"Successfully read existing XML data from {filename}.")
         return existing_data
     except ET.ParseError as e:
-        logging.error(f"XML parsing error in {filename}: {e}")
+        logging.warning(f"XML parsing error in {filename}: {e}")
         return {}
     except Exception as e:
-        logging.error(f"Error reading existing XML from {filename}: {e}")
+        logging.warning(f"Error reading existing XML from {filename}: {e}")
         return {}
 
 # Read existing data from macos_standalone_latest.xml
@@ -531,7 +531,7 @@ def fetch_and_process(app_name, config):
             add_to_combined_xml(app_name, extracted_data)
 
     except Exception as e:
-        logging.error(f"Error processing {app_name}: {e}")
+        logging.warning(f"Error processing {app_name}: {e}")
         # Use existing data if processing fails
         if app_name in existing_data:
             logging.info(f"Reverting to existing data for {app_name}.")
@@ -606,7 +606,7 @@ def compute_sha1(url):
         logging.info(f"SHA1 for {url}: {sha1_hash}")
         return sha1_hash
     except Exception as e:
-        logging.error(f"Error computing SHA1 for {url}: {e}")
+        logging.warning(f"Error computing SHA1 for {url}: {e}")
         return "N/A"
 
 # Function to compute SHA256 hash
@@ -625,7 +625,7 @@ def compute_sha256(url):
         logging.info(f"SHA256 for {url}: {sha256_hash}")
         return sha256_hash
     except Exception as e:
-        logging.error(f"Error computing SHA256 for {url}: {e}")
+        logging.warning(f"Error computing SHA256 for {url}: {e}")
         return "N/A"
 
 def add_to_combined_xml(app_name, data):
