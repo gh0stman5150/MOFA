@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_Outlook_Reset.zsh
@@ -136,7 +136,10 @@ RepairApp() {
 	echo "Office-Reset: Download package is ${CDN_PKG_MB} megabytes in size"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download"
-	/usr/bin/nscurl --background --download --large-download --location --download-directory $DOWNLOAD_FOLDER $CDN_PKG_URL
+	if ! /usr/bin/nscurl --background --download --large-download --location --download-directory "$DOWNLOAD_FOLDER" "$CDN_PKG_URL"; then
+		echo "Office-Reset: Package download failed" >&2
+		exit 1
+	fi
 	echo "Office-Reset: Finished package download"
 
 	LOCAL_PKG_SIZE=$(cd "${DOWNLOAD_FOLDER}" && stat -qf%z "${CDN_PKG_NAME}")
@@ -145,26 +148,26 @@ RepairApp() {
 	else
 		echo "Office-Reset: Downloaded package is malformed. Local file size: ${LOCAL_PKG_SIZE}"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
-	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
+	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
 	if [[ "${LOCAL_PKG_SIGNING}" == "Microsoft Corporation (UBF8T346G9)" ]]; then
 		echo "Office-Reset: Downloaded package is signed by Microsoft"
 	else
 		echo "Office-Reset: Downloaded package is not signed by Microsoft"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
 	echo "Office-Reset: Starting package install"
-	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
 		echo "Office-Reset: Package installation failed"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 	echo "Office-Reset: Exiting without removing configuration data"
 	exit 0
@@ -192,50 +195,50 @@ FindEntryExchange() {
 }
 
 HandleSecurityDeleteResult() {
-	local status="$1"
+	local security_status="$1"
 	local item_kind="$2"
 	local item_name="$3"
 	local output="$4"
 
-	if [[ "$status" -eq 0 || "$status" -eq "$SECURITY_ITEM_NOT_FOUND" ]]; then
+	if [[ "$security_status" -eq 0 || "$security_status" -eq "$SECURITY_ITEM_NOT_FOUND" ]]; then
 		return 0
 	fi
 
 	echo "Office-Reset: Failed to delete ${item_kind} '${item_name}' from the keychain: ${output}" >&2
-	return $status
+	return $security_status
 }
 
 RunDeleteCommand() {
 	"$@"
-	local status=$?
-	if [[ $status -ne 0 && $KEYCHAIN_DELETE_FAILURE -eq 0 ]]; then
-		KEYCHAIN_DELETE_FAILURE=$status
+	local command_status=$?
+	if [[ $command_status -ne 0 && $KEYCHAIN_DELETE_FAILURE -eq 0 ]]; then
+		KEYCHAIN_DELETE_FAILURE=$command_status
 	fi
-	return $status
+	return $command_status
 }
 
 DeleteInternetPasswordIfPresent() {
 	local output
-	local status
+	local command_status
 	output=$(runAsUser /usr/bin/security delete-internet-password -s "$1" 2>&1)
-	status=$?
-	HandleSecurityDeleteResult $status "internet password" "$1" "$output"
+	command_status=$?
+	HandleSecurityDeleteResult $command_status "internet password" "$1" "$output"
 }
 
 DeleteGenericPasswordIfPresent() {
 	local output
-	local status
+	local command_status
 	output=$(runAsUser /usr/bin/security delete-generic-password -l "$1" 2>&1)
-	status=$?
-	HandleSecurityDeleteResult $status "generic password label" "$1" "$output"
+	command_status=$?
+	HandleSecurityDeleteResult $command_status "generic password label" "$1" "$output"
 }
 
 DeleteGenericPasswordByGenericAttributeIfPresent() {
 	local output
-	local status
+	local command_status
 	output=$(runAsUser /usr/bin/security delete-generic-password -G "$1" 2>&1)
-	status=$?
-	HandleSecurityDeleteResult $status "generic password attribute" "$1" "$output"
+	command_status=$?
+	HandleSecurityDeleteResult $command_status "generic password attribute" "$1" "$output"
 }
 
 ## Main

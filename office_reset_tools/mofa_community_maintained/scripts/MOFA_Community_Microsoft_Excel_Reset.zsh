@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_Excel_Reset.zsh
@@ -156,7 +156,10 @@ RepairApp() {
 	echo "Office-Reset: Download package is ${CDN_PKG_MB} megabytes in size"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download"
-	/usr/bin/nscurl --background --download --large-download --location --download-directory $DOWNLOAD_FOLDER $CDN_PKG_URL
+	if ! /usr/bin/nscurl --background --download --large-download --location --download-directory "$DOWNLOAD_FOLDER" "$CDN_PKG_URL"; then
+		echo "Office-Reset: Package download failed" >&2
+		exit 1
+	fi
 	echo "Office-Reset: Finished package download"
 
 	LOCAL_PKG_SIZE=$(cd "${DOWNLOAD_FOLDER}" && stat -qf%z "${CDN_PKG_NAME}")
@@ -165,26 +168,26 @@ RepairApp() {
 	else
 		echo "Office-Reset: Downloaded package is malformed. Local file size: ${LOCAL_PKG_SIZE}"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
-	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
+	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
 	if [[ "${LOCAL_PKG_SIGNING}" == "Microsoft Corporation (UBF8T346G9)" ]]; then
 		echo "Office-Reset: Downloaded package is signed by Microsoft"
 	else
 		echo "Office-Reset: Downloaded package is not signed by Microsoft"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
 	echo "Office-Reset: Starting package install"
-	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
 		echo "Office-Reset: Package installation failed"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 	echo "Office-Reset: Exiting without removing configuration data"
 	exit 0

@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_SkypeForBusiness_Removal.zsh

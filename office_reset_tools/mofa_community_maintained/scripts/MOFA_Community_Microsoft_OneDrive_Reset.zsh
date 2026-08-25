@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_OneDrive_Reset.zsh
@@ -61,6 +61,28 @@ runAsUser() {
 	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ "$target" != /* || "$target" == "/" ]]; then
+			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
+			return 1
+		fi
+		/bin/rm -rf -- "$target"
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ "$target" != /* || "$target" == "/" ]]; then
+			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
+			return 1
+		fi
+		/bin/rm -f -- "$target"
+	done
+}
+
 shouldReinstall() {
 	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
 }
@@ -81,7 +103,10 @@ RepairApp() {
 	echo "Office-Reset: Download package is ${CDN_PKG_MB} megabytes in size"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download"
-	/usr/bin/nscurl --background --download --large-download --location --download-directory $DOWNLOAD_FOLDER $DOWNLOAD_URL
+	if ! /usr/bin/nscurl --background --download --large-download --location --download-directory "$DOWNLOAD_FOLDER" "$DOWNLOAD_URL"; then
+		echo "Office-Reset: Package download failed" >&2
+		exit 1
+	fi
 	echo "Office-Reset: Finished package download"
 
 	LOCAL_PKG_SIZE=$(cd "${DOWNLOAD_FOLDER}" && stat -qf%z "${CDN_PKG_NAME}")
@@ -90,26 +115,26 @@ RepairApp() {
 	else
 		echo "Office-Reset: Downloaded package is malformed. Local file size: ${LOCAL_PKG_SIZE}"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
-	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
+	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
 	if [[ "${LOCAL_PKG_SIGNING}" == "Microsoft Corporation (UBF8T346G9)" ]]; then
 		echo "Office-Reset: Downloaded package is signed by Microsoft"
 	else
 		echo "Office-Reset: Downloaded package is not signed by Microsoft"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
 	echo "Office-Reset: Starting package install"
-	/usr/sbin/installer -pkg ${DOWNLOAD_FOLDER}${CDN_PKG_NAME} -target /
+	/usr/sbin/installer -pkg "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" -target /
 	if [ $? -eq 0 ]; then
 		echo "Office-Reset: Package installed successfully"
 	else
 		echo "Office-Reset: Package installation failed"
 		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
-		exit 0
+		exit 1
 	fi
 
 }
@@ -157,75 +182,67 @@ else
 fi
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-/bin/rm -rf $HOME/Library/Caches/OneDrive
-/bin/rm -rf $HOME/Library/Caches/com.microsoft.OneDrive
-/bin/rm -rf $HOME/Library/Caches/com.microsoft.OneDriveUpdater
-/bin/rm -rf $HOME/Library/Caches/com.microsoft.OneDriveStandaloneUpdater
-/bin/rm -rf $HOME/Library/Caches/com.microsoft.SyncReporter
-/bin/rm -rf $HOME/Library/Caches/com.microsoft.SharePoint-mac
+removePathList \
+	"$HOME/Library/Caches/OneDrive" \
+	"$HOME/Library/Caches/com.microsoft.OneDrive" \
+	"$HOME/Library/Caches/com.microsoft.OneDriveUpdater" \
+	"$HOME/Library/Caches/com.microsoft.OneDriveStandaloneUpdater" \
+	"$HOME/Library/Caches/com.microsoft.SyncReporter" \
+	"$HOME/Library/Caches/com.microsoft.SharePoint-mac" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater" \
+	"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac" \
+	"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater" \
+	"$HOME/Library/WebKit/com.microsoft.OneDrive" \
+	"$HOME/Library/Containers/com.microsoft.OneDrive-mac" \
+	"$HOME/Library/Containers/com.microsoft.OneDrive.FinderSync" \
+	"$HOME/Library/Containers/com.microsoft.OneDrive-mac.FinderSync" \
+	"$HOME/Library/Containers/com.microsoft.OneDriveLauncher" \
+	"$HOME/Library/Containers/com.microsoft.OneDrive.FileProvider" \
+	"$HOME/Library/Logs/OneDrive" \
+	"/Library/Logs/Microsoft/OneDrive" \
+	"$HOME/Library/Application Support/OneDrive" \
+	"$HOME/Library/Application Support/com.microsoft.OneDrive" \
+	"$HOME/Library/Application Support/com.microsoft.OneDriveUpdater" \
+	"$HOME/Library/Application Support/com.microsoft.OneDriveStandaloneUpdater" \
+	"$HOME/Library/Application Support/com.microsoft.SharePoint-mac" \
+	"$HOME/Library/Application Support/OneDriveUpdater" \
+	"$HOME/Library/Application Support/OneDriveStandaloneUpdater" \
+	"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FinderSync" \
+	"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FileProvider" \
+	"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveStandaloneSuite" \
+	"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration" \
+	"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveSyncClientSuite" \
+	"$HOME/Library/Application Scripts/UBF8T346G9.Kfm" \
+	"$HOME/Library/Group Containers/UBF8T346G9.OfficeOneDriveSyncIntegration" \
+	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveStandaloneSuite" \
+	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Kfm" \
+	"${TMPDIR:-/private/tmp}/com.microsoft.OneDrive" \
+	"${TMPDIR:-/private/tmp}/com.microsoft.OneDrive.FinderSync"
 
-/bin/rm -f $HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies
-/bin/rm -f $HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies
-/bin/rm -f $HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies
-
-/bin/rm -rf $HOME/Library/HTTPStorages/com.microsoft.OneDrive
-/bin/rm -f $HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies
-/bin/rm -rf $HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater
-/bin/rm -f $HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater.binarycookies
-/bin/rm -rf $HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac
-/bin/rm -f $HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac.binarycookies
-/bin/rm -rf $HOME/Library/HTTPStorages/com.microsoft.SyncReporter
-/bin/rm -f $HOME/Library/HTTPStorages/com.microsoft.SyncReporter.binarycookies
-/bin/rm -rf $HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater
-/bin/rm -f $HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies
-
-/bin/rm -rf $HOME/Library/WebKit/com.microsoft.OneDrive
-
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.OneDrive-mac
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.OneDrive.FinderSync
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.OneDrive-mac.FinderSync
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.OneDriveLauncher
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.OneDrive.FileProvider
-
-/bin/rm -rf $HOME/Library/Logs/OneDrive
-/bin/rm -rf /Library/Logs/Microsoft/OneDrive
-
-/bin/rm -rf $HOME/Library/Application\ Support/OneDrive
-/bin/rm -rf $HOME/Library/Application\ Support/com.microsoft.OneDrive
-/bin/rm -rf $HOME/Library/Application\ Support/com.microsoft.OneDriveUpdater
-/bin/rm -rf $HOME/Library/Application\ Support/com.microsoft.OneDriveStandaloneUpdater
-/bin/rm -rf $HOME/Library/Application\ Support/com.microsoft.SharePoint-mac
-/bin/rm -rf $HOME/Library/Application\ Support/OneDriveUpdater
-/bin/rm -rf $HOME/Library/Application\ Support/OneDriveStandaloneUpdater
-
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.OneDrive.FinderSync
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.OneDrive.FileProvider
-/bin/rm -rf $HOME/Library/Application\ Scripts/UBF8T346G9.OneDriveStandaloneSuite
-/bin/rm -rf $HOME/Library/Application\ Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration
-/bin/rm -rf $HOME/Library/Application\ Scripts/UBF8T346G9.OneDriveSyncClientSuite
-/bin/rm -rf $HOME/Library/Application\ Scripts/UBF8T346G9.Kfm
-
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.OfficeOneDriveSyncIntegration
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.OneDriveStandaloneSuite
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.OneDriveSyncClientSuite
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Kfm
-
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.OneDrive.plist
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.SharePoint-mac.plist
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.OneDriveUpdater.plist
-/bin/rm -f $HOME/Library/Preferences/UBF8T346G9.OneDriveStandaloneSuite.plist
-/bin/rm -f $HOME/Library/Preferences/UBF8T346G9.OfficeOneDriveSyncIntegration.plist
-/bin/rm -f /Library/Preferences/com.microsoft.OneDrive.plist
-/bin/rm -f /Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist
-/bin/rm -f /Library/Preferences/com.microsoft.OneDriveUpdater.plist
-/bin/rm -f /Library/Preferences/com.microsoft.OneDrive.plist
-/bin/rm -f /Library/Managed\ Preferences/com.microsoft.OneDriveStandaloneUpdater.plist
-/bin/rm -f /Library/Managed\ Preferences/com.microsoft.OneDriveUpdater.plist
-
-/bin/rm -rf $TMPDIR/com.microsoft.OneDrive
-/bin/rm -rf $TMPDIR/com.microsoft.OneDrive.FinderSync
-/bin/rm -f $TMPDIR/OneDriveVersion.xml
+removeFileList \
+	"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
+	"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
+	"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater.binarycookies" \
+	"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac.binarycookies" \
+	"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter.binarycookies" \
+	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+	"$HOME/Library/Preferences/com.microsoft.OneDrive.plist" \
+	"$HOME/Library/Preferences/com.microsoft.SharePoint-mac.plist" \
+	"$HOME/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+	"$HOME/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
+	"$HOME/Library/Preferences/UBF8T346G9.OneDriveStandaloneSuite.plist" \
+	"$HOME/Library/Preferences/UBF8T346G9.OfficeOneDriveSyncIntegration.plist" \
+	"/Library/Preferences/com.microsoft.OneDrive.plist" \
+	"/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+	"/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
+	"/Library/Managed Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+	"/Library/Managed Preferences/com.microsoft.OneDriveUpdater.plist" \
+	"${TMPDIR:-/private/tmp}/OneDriveVersion.xml"
 
 if [[ -n "$LoggedInUser" ]]; then
 	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
@@ -249,7 +266,7 @@ if [[ -n "$LoggedInUser" ]]; then
 else
 	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 fi
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.com.microsoft.oneauth
+removePathList "$HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
 
 KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
 if [[ -n "$KEYCHAIN_2_PATH" ]]; then

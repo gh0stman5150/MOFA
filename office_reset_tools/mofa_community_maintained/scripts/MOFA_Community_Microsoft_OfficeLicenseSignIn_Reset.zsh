@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_OfficeLicenseSignIn_Reset.zsh
@@ -54,6 +54,28 @@ runAsUser() {
 	fi
 
 	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+}
+
+removePathList() {
+	local target
+	for target in "$@"; do
+		if [[ "$target" != /* || "$target" == "/" ]]; then
+			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
+			return 1
+		fi
+		/bin/rm -rf -- "$target"
+	done
+}
+
+removeFileList() {
+	local target
+	for target in "$@"; do
+		if [[ "$target" != /* || "$target" == "/" ]]; then
+			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
+			return 1
+		fi
+		/bin/rm -f -- "$target"
+	done
 }
 
 FindEntryOpenTech() {
@@ -164,56 +186,59 @@ else
 fi
 
 echo "Office-Reset: Removing credential and license files"
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/mip_policy
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/DRM_Evo.plist
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.com.microsoft.oneauth
+removePathList \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy" \
+	"$HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
+removeFileList "$HOME/Library/Group Containers/UBF8T346G9.Office/DRM_Evo.plist"
 
-/bin/rm -f /Library/Preferences/com.microsoft.office.licensingV2.plist.bak
-/bin/mv /Library/Preferences/com.microsoft.office.licensingV2.plist /Library/Preferences/com.microsoft.office.licensingV2.backup
+removeFileList "/Library/Preferences/com.microsoft.office.licensingV2.plist.bak"
+/bin/mv "/Library/Preferences/com.microsoft.office.licensingV2.plist" "/Library/Preferences/com.microsoft.office.licensingV2.backup"
 
-/bin/rm -f /Library/Application\ Support/Microsoft/Office365/com.microsoft.Office365.plist
-/bin/rm -f /Library/Application\ Support/Microsoft/Office365/com.microsoft.Office365V2.plist
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/com.microsoft.Office365.plist
-/bin/mv $HOME/Library/Group\ Containers/UBF8T346G9.Office/com.microsoft.Office365V2.plist $HOME/Library/Group\ Containers/UBF8T346G9.Office/com.microsoft.Office365V2.backup
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/com.microsoft.e0E2OUQxNUY1LTAxOUQtNDQwNS04QkJELTAxQTI5M0JBOTk4O.plist
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/e0E2OUQxNUY1LTAxOUQtNDQwNS04QkJELTAxQTI5M0JBOTk4O
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/com.microsoft.O4kTOBJ0M5ITQxATLEJkQ40SNwQDNtQUOxATL1YUNxQUO2E0e.plist
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/O4kTOBJ0M5ITQxATLEJkQ40SNwQDNtQUOxATL1YUNxQUO2E0e
+removeFileList \
+	"/Library/Application Support/Microsoft/Office365/com.microsoft.Office365.plist" \
+	"/Library/Application Support/Microsoft/Office365/com.microsoft.Office365V2.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/com.microsoft.Office365.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/com.microsoft.e0E2OUQxNUY1LTAxOUQtNDQwNS04QkJELTAxQTI5M0JBOTk4O.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/e0E2OUQxNUY1LTAxOUQtNDQwNS04QkJELTAxQTI5M0JBOTk4O" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/com.microsoft.O4kTOBJ0M5ITQxATLEJkQ40SNwQDNtQUOxATL1YUNxQUO2E0e.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/O4kTOBJ0M5ITQxATLEJkQ40SNwQDNtQUOxATL1YUNxQUO2E0e"
+/bin/mv "$HOME/Library/Group Containers/UBF8T346G9.Office/com.microsoft.Office365V2.plist" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/com.microsoft.Office365V2.backup"
 
-/bin/rm -rf /Library/Microsoft/Office/Licenses
-/bin/rm -rf $HOME/Library/Group\ Containers/UBF8T346G9.Office/Licenses
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.RMS-XPCService
-/bin/rm -rf $HOME/Library/Application\ Scripts/com.microsoft.Office365ServiceV2
+removePathList \
+	"/Library/Microsoft/Office/Licenses" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/Licenses" \
+	"$HOME/Library/Containers/com.microsoft.RMS-XPCService" \
+	"$HOME/Library/Application Scripts/com.microsoft.Office365ServiceV2" \
+	"$HOME/Library/Containers/com.microsoft.Word/Data/Library/Application Support/Microsoft" \
+	"$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Application Support/Microsoft" \
+	"$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Application Support/Microsoft" \
+	"$HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Application Support/Microsoft" \
+	"$HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support/Microsoft"
 
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Word/Data/Library/Application\ Support/Microsoft
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Application\ Support/Microsoft
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Application\ Support/Microsoft
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Application\ Support/Microsoft
-/bin/rm -rf $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Application\ Support/Microsoft
-
-/bin/rm -f $HOME/Library/Preferences/com.microsoft.msa-login-hint.plist
+removeFileList "$HOME/Library/Preferences/com.microsoft.msa-login-hint.plist"
 
 echo "Office-Reset: Changing preferences"
 if [ -e "$HOME/Library/Preferences/com.microsoft.office.plist" ]; then
-	runAsUser /usr/bin/defaults delete $HOME/Library/Preferences/com.microsoft.office OfficeActivationEmailAddress 2>/dev/null || true
-	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office OfficeAutoSignIn -bool TRUE
-	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenFREDialog -bool TRUE
-	runAsUser /usr/bin/defaults write $HOME/Library/Preferences/com.microsoft.office HasUserSeenEnterpriseFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults delete "$HOME/Library/Preferences/com.microsoft.office" OfficeActivationEmailAddress 2>/dev/null || true
+	runAsUser /usr/bin/defaults write "$HOME/Library/Preferences/com.microsoft.office" OfficeAutoSignIn -bool TRUE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Preferences/com.microsoft.office" HasUserSeenFREDialog -bool TRUE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Preferences/com.microsoft.office" HasUserSeenEnterpriseFREDialog -bool TRUE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences" ]; then
-	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Preferences/com.microsoft.Word" kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences" ]; then
-	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Preferences/com.microsoft.Excel" kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences" ]; then
-	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Library/Preferences/com.microsoft.Powerpoint" kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences" ]; then
-	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Containers/com.microsoft.Outlook/Data/Library/Preferences/com.microsoft.Outlook" kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 if [ -d "$HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences" ]; then
-	runAsUser /usr/bin/defaults write $HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
+	runAsUser /usr/bin/defaults write "$HOME/Library/Containers/com.microsoft.onenote.mac/Data/Library/Preferences/com.microsoft.onenote.mac" kSubUIAppCompletedFirstRunSetup1507 -bool FALSE
 fi
 
 KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
@@ -221,8 +246,9 @@ if [[ -n "$KEYCHAIN_2_PATH" ]]; then
 	/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
 fi
 
-/bin/rm -f $HOME/Library/Keychains/Microsoft_Entity_Certificates-db
-/bin/rm -f $HOME/Library/Group\ Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg
+removeFileList \
+	"$HOME/Library/Keychains/Microsoft_Entity_Certificates-db" \
+	"$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
 
 runAsUser /usr/bin/killall cfprefsd >/dev/null 2>&1 || true
 

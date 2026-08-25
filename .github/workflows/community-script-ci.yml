@@ -26,5 +26,9 @@ jobs:
           set -euo pipefail
           while IFS= read -r -d '' script; do
             echo "Checking $script"
+            if [[ "$(head -n 1 "$script")" != '#!/bin/zsh --no-rcs' ]]; then
+              echo "Jamf policy script must use /bin/zsh --no-rcs: $script" >&2
+              exit 1
+            fi
             /bin/zsh -n "$script"
           done < <(find office_reset_tools/mofa_community_maintained/scripts -type f -name '*.zsh' -print0)
