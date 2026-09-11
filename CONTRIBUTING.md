@@ -3,6 +3,12 @@ title: MOFA Maintenance and Contributions
 description: Feed generation, endpoint tools and validation workflow.
 ---
 
+## Instruction authority
+
+[AGENTS.md](AGENTS.md) is the authoritative contributor instruction file.
+This guide remains the human-oriented maintenance reference; keep its commands
+and workflow descriptions consistent with AGENTS.md and its nested guide.
+
 ## Source and generated content
 
 MOFA combines Python feed generators, Microsoft application reset tools,
