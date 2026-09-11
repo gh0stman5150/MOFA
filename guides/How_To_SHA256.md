@@ -1,78 +1,33 @@
-# **How to Use SHA256 on macOS**
-
-## **What is a SHA256 Checksum?**
-
-SHA256 (Secure Hash Algorithm 256-bit) is a cryptographic hash function that generates a unique, fixed-length string for a given file. It's commonly used to:
-
-- Verify file integrity: Ensure a downloaded file hasn’t been tampered with.
-- Authenticate downloads: Match the provided checksum with the file's checksum.
-
+---
+title: Checking Downloaded File Integrity
+description: Comparing SHA256 checksums for macOS package downloads.
 ---
 
-## **How to Generate a SHA256 Checksum**
+## Verify a downloaded file
 
-1. **Open the Terminal**:
-   - Use Spotlight (`Cmd + Space`) to search for "Terminal" and open it.
+From a directory containing a downloaded package on macOS:
 
-2. **Navigate to the File Location**:
-   - Use the `cd` command to go to the folder containing your file:
-     ```bash
-     cd /path/to/your/file
-     ```
+```bash
+shasum -a 256 "downloaded-package.pkg"
+```
 
-3. **Run the Checksum Command**:
-   - Replace `yourfile` with the actual filename:
-     ```bash
-     shasum -a 256 yourfile
-     ```
-   - Example output:
-     ```
-     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  yourfile
-     ```
-   - The long string is the file's SHA256 checksum.
+Compare the complete 64-character hexadecimal result with the expected checksum
+obtained through a trusted source for that exact file. A match establishes
+agreement with that checksum; a checksum alone does not identify the publisher.
 
-4. **Compare Checksum Values**:
-   - Match the output with the checksum provided by the file's source to ensure it’s unchanged.
+To download, replace the example URL and output name with the intended package:
 
----
+```bash
+curl --fail --location --output "downloaded-package.pkg" "https://example.com/package.pkg"
+shasum -a 256 "downloaded-package.pkg"
+```
 
-## **How to Use a SHA256 Checksum with `curl`**
+The URL is illustrative. Do not install the example or a file whose checksum
+differs. Check the intended version and download source before retrying.
+Where a deployment script validates a package signature, retain that validation
+as well as any checksum check.
 
-When downloading files using `curl`, you can verify the integrity of the downloaded file by comparing its checksum with the expected value.
-
-1. **Download the File with `curl`**:
-   - Replace `<url>` with the file’s download link:
-     ```bash
-     curl -O <url>
-     ```
-     Example:
-     ```bash
-     curl -O https://example.com/myfile.pkg
-     ```
-
-2. **Generate the Checksum**:
-   - Run the same command as above to get the checksum of the downloaded file:
-     ```bash
-     shasum -a 256 myfile.pkg
-     ```
-
-3. **Verify the Checksum**:
-   - Compare the output of the command with the checksum provided by the file's source. If the checksums match, the file is intact.
-
----
-
-### **Example Workflow**
-
-1. **Download the file**:
-   ```bash
-   curl -O https://example.com/software.pkg
-   ```
-2. **Check the checksum**:
-   ```bash
-   shasum -a 256 software.pkg
-   ```
-3. **Compare with the provided checksum**:
-   - If the checksum provided is `abc123...`, ensure the output matches:
-     ```
-     abc123...  software.pkg
-     ```
+MOFA release checksums are generated data. Check dataset timestamps and the
+update workflow before relying on a cached value; a moving vendor download URL
+can serve a different file after the dataset was generated. See
+[maintenance instructions](../CONTRIBUTING.md).

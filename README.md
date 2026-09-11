@@ -1,6 +1,9 @@
 # **MOFA**
 **M**icrosoft **O**verview **F**eed for **A**pple
 
+For build, validation and contribution guidance, see [Maintenance and contributions](CONTRIBUTING.md).
+Release tables are cached generated data; check dataset timestamps and pending update pull requests before use.
+
 <img src=".github/images/logo_Mofa_NoBackground.png" alt="MOFA Image" width="200">
 
 Welcome to the **MOFA** repository! This resource offers Microsoft Office downloads for macOS, comprehensive data feeds for all iOS, Mac App Store, and other Microsoft apps, along with tools and documentation links to help Mac admins manage and repair Microsoft products on Apple platforms. Feeds are automatically updated from XML and JSON links directly from Microsoft.
@@ -105,7 +108,7 @@ We welcome community contributions—fork the repository, ask questions, or shar
 
 <sup>_**For items without specific release notes, please refer to the release notes for the entire suite.**_</sup> <br>
 
-<sup>_<img src=".github/images/sha-256.png" alt="Download Image" width="15">[**How to Get the SHA256 Guide**](/guides/How_To_SHA256.md)<img src=".github/images/sha-256.png" alt="Download Image" width="15">_</sup>
+<sup>_<img src=".github/images/sha-256.png" alt="Download Image" width="15">[**How to Get the SHA256 Guide**](guides/How_To_SHA256.md)<img src=".github/images/sha-256.png" alt="Download Image" width="15">_</sup>
 
 | **Last Supported MacOS** | **File Name** | **Version** | **Download** |
 |---------------------------|----------------|-------------|--------------|
@@ -206,7 +209,7 @@ PLIST (Property List) files are used by macOS to store settings and preferences 
 - **Enforce policies**
 - **Manage application behavior efficiently**
 
-For a detailed guide on how to create and manage PLIST files, refer to the [How to Plist Guide](/guides/How_To_plist.md).
+For a detailed guide on how to create and manage PLIST files, refer to the [How to Plist Guide](guides/How_To_plist.md).
 
 ### **Recommended Resources:**
 

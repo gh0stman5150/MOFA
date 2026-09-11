@@ -1,7 +1,15 @@
-# MOFA Packages  
+---
+title: MOFA Community Packages
+description: Package availability for community-maintained reset tools.
+---
 
-These packages were originally sourced from package files like `Microsoft_Office_Reset_2.0.0.pkg` from *Office-Reset.com*, created by Paul Bowden. Since *Office-Reset.com* is no longer maintained, the MOFA and Mac Admin communities have taken over the responsibility of maintaining and improving these packages.  
+## Availability
 
-We encourage users to contribute, enhance, fork, and suggest fixes to help refine these tools for the benefit of the community. In the future, we also plan to offer packaged versions of these scripts for more seamless deployment and usage.
+This directory contains documentation only; no community packages or package
+build pipeline are provided. Use the [community scripts](../scripts/README.md)
+for documented Jamf deployment.
 
-**Notes:** Currently, `cocopuff2u`, the maintainer of MOFA, does not have a developer account to sign packages, and their experience with building and signing packages has not yet been tested. While confident in their ability to handle it, they would appreciate guidance from someone experienced in the process. They prefer to maintain control over package signing to ensure the integrity and security of the packages, preventing any malicious alterations.
+Historical Office-Reset.com packages, originally created by Paul Bowden, remain
+under office_reset_archived/packages for reference. Their presence does not
+establish parity with current scripts. No future release or signing capability
+is promised by this checkout.
