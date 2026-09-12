@@ -1,56 +1,56 @@
 <?xml version="1.0" ?>
 <latest>
-	<last_updated>September 01, 2026 11:31 AM EDT</last_updated>
+	<last_updated>September 12, 2026 04:20 PM EDT</last_updated>
 	<package>
 		<name>MacOS Microsoft Word</name>
 		<application_name>Microsoft Word</application_name>
 		<bundleId>com.microsoft.Word</bundleId>
-		<currentVersionReleaseDate>August 25, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/de/c1/59/dec15928-6c06-40c2-8776-47b889146324/Word_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 10, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/9b/bc/19/9bbc194a-2f8d-f094-5b47-aa4f478067ee/Word_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>• General quality and performance enhancements.</releaseNotes>
-		<version>16.112.2</version>
+		<version>16.112.4</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-word/id462054704?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft Excel</name>
 		<application_name>Microsoft Excel</application_name>
 		<bundleId>com.microsoft.Excel</bundleId>
-		<currentVersionReleaseDate>August 25, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/b9/dc/66/b9dc66f8-170d-99d7-acca-66bf23e40b85/Excel_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 10, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/c9/d7/c1/c9d7c127-86ac-95ff-5525-abd02b4450bb/Excel_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>• General quality and performance enhancements.</releaseNotes>
-		<version>16.112.2</version>
+		<version>16.112.4</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-excel/id462058435?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft PowerPoint</name>
 		<application_name>Microsoft PowerPoint</application_name>
 		<bundleId>com.microsoft.Powerpoint</bundleId>
-		<currentVersionReleaseDate>August 25, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/ad/4a/34ad4a5e-46a8-d8ce-31cd-20da487024ab/Powerpoint_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 10, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/dc/a8/36/dca836e5-40d2-48fb-2ddc-3b329d92d125/Powerpoint_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>• General quality and performance enhancements.</releaseNotes>
-		<version>16.112.2</version>
+		<version>16.112.4</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-powerpoint/id462062816?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft Outlook</name>
 		<application_name>Microsoft Outlook</application_name>
 		<bundleId>com.microsoft.Outlook</bundleId>
-		<currentVersionReleaseDate>August 18, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/4e/4e/71/4e4e7158-a7bf-aee8-726f-e16870957916/Outlook_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 10, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/18/f3/0b/18f30b38-af02-5788-44b7-7a9a1391f700/Outlook_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>• General quality and performance enhancements.</releaseNotes>
-		<version>16.112.1</version>
+		<version>16.112.4</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-outlook/id985367838?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft OneNote</name>
 		<application_name>Microsoft OneNote</application_name>
 		<bundleId>com.microsoft.onenote.mac</bundleId>
-		<currentVersionReleaseDate>September 01, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/db/bf/3a/dbbf3afe-435f-e515-06b2-9ed926a26da9/OneNote_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 10, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/6e/f9/46/6ef946f0-3473-d873-5bd4-6aa6479e43d6/OneNote_macOS-0-0-85-220-0-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>This month’s update is bug fixes only.
 
@@ -58,40 +58,40 @@ Thanks for using OneNote! We listened to your feedback and updated the applicati
  
 Having trouble? Send feedback in the app by clicking on the smiley face in the top-right of the app.
 Have an idea? Add to our feature suggestion box at https://aka.ms/onenotefeedback</releaseNotes>
-		<version>16.112.3</version>
+		<version>16.112.4</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-onenote/id784801555?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft OneDrive</name>
 		<application_name>OneDrive</application_name>
 		<bundleId>com.microsoft.OneDrive-mac</bundleId>
-		<currentVersionReleaseDate>August 28, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/d0/55/06/d055065d-8a6a-8852-e31f-f7d976a595ae/OneDrive.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 09, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/6c/f8/4c/6cf84cef-3c34-bcc2-c832-8d5eb815d093/OneDrive.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.4</minimumOsVersion>
 		<releaseNotes>Thank you for using OneDrive. We are always looking to update OneDrive to bring you the latest performance improvements and bug fixes for the best experience.</releaseNotes>
-		<version>26.145.0728</version>
+		<version>26.158.0816</version>
 		<app_store_url>https://apps.apple.com/us/app/onedrive/id823766827?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS RMS Sharing</name>
 		<application_name>ShareMe: File Sharing &amp; MeDrop</application_name>
 		<bundleId>com.sharedrop.wifiShare</bundleId>
-		<currentVersionReleaseDate>August 21, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/47/47/49/4747496e-8352-5fe7-1a6c-828600ea4921/AppIcon-1x_U007emarketing-0-8-0-85-220-0.png/512x512bb.jpg</icon_image>
+		<currentVersionReleaseDate>September 03, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/3b/0e/e4/3b0ee45e-a411-073a-27e5-b11d412e5d3e/AppIcon-1x_U007emarketing-0-8-0-85-220-0.png/512x512bb.jpg</icon_image>
 		<minimumOsVersion>15.0</minimumOsVersion>
 		<releaseNotes>Bug fixes</releaseNotes>
-		<version>1.0.4</version>
+		<version>1.0.6</version>
 		<app_store_url>https://apps.apple.com/us/app/shareme-file-sharing-medrop/id6783182140?uo=4</app_store_url>
 	</package>
 	<package>
 		<name>MacOS Microsoft Windows App</name>
 		<application_name>Windows App</application_name>
 		<bundleId>com.microsoft.rdc.macos</bundleId>
-		<currentVersionReleaseDate>August 21, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/f5/71/ff/f571ff21-86a3-fa50-7494-53a5feaf658e/AppIcon-0-0-85-220-0-0-6-0-2x.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 09, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/52/a4/d2/52a4d2a8-56c0-1345-6cbf-3c314241d391/AppIcon-0-0-85-220-0-0-6-0-2x.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
-		<releaseNotes>In this release, we made some improvements to help enhance the stability and supportability of Windows App. If you encounter any errors, you can contact us via Help &gt; Submit Feedback.</releaseNotes>
-		<version>11.4.0</version>
+		<releaseNotes>In this release, we made some improvements to help enhance the stability and security of Windows App. If you encounter any errors, you can contact us via Help &gt; Submit Feedback.</releaseNotes>
+		<version>11.4.1</version>
 		<app_store_url>https://apps.apple.com/us/app/windows-app/id1295203466?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
@@ -109,11 +109,11 @@ Have an idea? Add to our feature suggestion box at https://aka.ms/onenotefeedbac
 		<name>MacOS Microsoft CoPilot</name>
 		<application_name>Microsoft Copilot</application_name>
 		<bundleId>com.microsoft.copilot-mac</bundleId>
-		<currentVersionReleaseDate>August 24, 2026</currentVersionReleaseDate>
-		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/d0/9e/1b/d09e1b67-b805-97f7-da87-b293e40db833/AppIcon-0-85-220-0-6-0-0-2x-0-0.png/512x512bb.png</icon_image>
+		<currentVersionReleaseDate>September 03, 2026</currentVersionReleaseDate>
+		<icon_image>https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/b3/94/04/b39404b4-3746-b6bf-0e3b-d20db7959540/AppIcon-0-85-220-0-6-0-0-2x-0-0.png/512x512bb.png</icon_image>
 		<minimumOsVersion>14.0</minimumOsVersion>
 		<releaseNotes>Bug fixes and performance improvements.</releaseNotes>
-		<version>25.7.440822001</version>
+		<version>25.7.440902001</version>
 		<app_store_url>https://apps.apple.com/us/app/microsoft-copilot/id6738511300?mt=12&amp;uo=4</app_store_url>
 	</package>
 	<package>
