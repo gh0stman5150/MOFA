@@ -3,3 +3,7 @@
 latest_raw_files/
 # Static image assets.
 icons/
+
+# gh-aw generated agent and skill files, identical across repositories.
+.github/agents/agentic-workflows.md
+.github/skills/agentic-workflows/
