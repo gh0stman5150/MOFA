@@ -1,0 +1,5 @@
+# Excluded from ripgrep-based search (including coding agents); still tracked.
+# Generated feeds: the same data in XML, JSON, YAML and RSS.
+latest_raw_files/
+# Static image assets.
+icons/
