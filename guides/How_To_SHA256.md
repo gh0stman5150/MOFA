@@ -30,4 +30,4 @@ as well as any checksum check.
 MOFA release checksums are generated data. Check dataset timestamps and the
 update workflow before relying on a cached value; a moving vendor download URL
 can serve a different file after the dataset was generated. See
-[maintenance instructions](../CONTRIBUTING.md).
+[maintenance instructions](../AGENTS.md#validation).

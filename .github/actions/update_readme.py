@@ -246,7 +246,7 @@ def generate_readme_content(global_last_updated, packages, ios_packages, macos_p
     content = f"""# **MOFA**
 **M**icrosoft **O**verview **F**eed for **A**pple
 
-For build, validation and contribution guidance, see [Maintenance and contributions](CONTRIBUTING.md).
+For build, validation and contribution guidance, see [Maintenance and contributions](AGENTS.md).
 Release tables are cached generated data; check dataset timestamps and pending update pull requests before use.
 
 <img src=".github/images/logo_Mofa_NoBackground.png" alt="MOFA Image" width="200">

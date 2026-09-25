@@ -8,8 +8,6 @@ description: Feed automation, generated content and endpoint-tool routing.
 MOFA contains Microsoft application metadata feeds, reset tools, configuration
 profiles and supporting assets. This file owns repository contributor guidance.
 In MacProjects, consult the [shared workspace rules](../AGENTS.md#shared-rules).
-[CONTRIBUTING.md](CONTRIBUTING.md) is the human maintenance guide and must stay
-consistent with this file.
 
 The [Copilot entry point](.github/copilot-instructions.md) links here and does
 not maintain a second copy of these rules.
@@ -68,7 +66,7 @@ git diff -- README.md latest_raw_files
 
 Add focused tests for changed generators/helpers, using mocked HTTP and
 synthetic fixtures. For endpoint script work, use the linked nested guide.
-Keep CONTRIBUTING.md and directory READMEs synchronized with workflow changes.
+Keep the README template and directory READMEs synchronized with workflow changes.
 
 ## Known gaps
 

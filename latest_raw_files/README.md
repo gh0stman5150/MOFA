@@ -23,5 +23,5 @@ vendor versions. Inspect generator output and validation when a product or
 version appears inconsistent.
 
 Do not hand-edit generated datasets. See
-[maintenance instructions](../CONTRIBUTING.md) for dependencies and refresh
+[maintenance instructions](../AGENTS.md#validation) for dependencies and refresh
 commands. This directory accepts no Jamf parameters and creates no endpoint log.
