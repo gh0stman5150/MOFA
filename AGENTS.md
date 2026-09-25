@@ -16,7 +16,9 @@ not maintain a second copy of these rules.
 
 - .github/actions/: Python HTTP helpers, generators and README template.
 - .github/requirements.txt: pinned Python dependencies.
-- latest_raw_files/: generated XML, JSON, YAML and RSS feeds.
+- latest_raw_files/: generated XML, JSON, YAML and RSS feeds. Excluded from
+  search by [.ignore](.ignore); query one format with jq or xmllint rather
+  than reading files whole.
 - tests/: pytest coverage for HTTP, automation, data and shell safety.
 - office_reset_tools/mofa_community_maintained/scripts/: active Jamf endpoint
   tools; follow its [AGENTS.md](office_reset_tools/mofa_community_maintained/scripts/AGENTS.md)
