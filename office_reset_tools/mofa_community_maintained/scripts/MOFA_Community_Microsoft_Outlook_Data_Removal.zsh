@@ -7,30 +7,42 @@
 #
 # Version History:
 # 1.0.0 - Based on the latest available package from *Office-Reset.com*; recreated for MOFA to continue maintenance where *Office-Reset.com* left off.
+# 1.1.0 - MOFA refresh: require a console user with a home under /Users, guard removal targets,
+#         and return nonzero when a removal fails. Removed unused helpers.
 #
+# WARNING: permanently deletes the console user's local Outlook data store
+# (~/Library/Group Containers/UBF8T346G9.Office/Outlook), including "On My Computer" mail.
 # ============================================================
-
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 echo "Office-Reset: Starting postinstall for Remove_Outlook_Data"
-autoload is-at-least
 
 if [[ $EUID -ne 0 ]]; then
 	echo "Office-Reset: This script must be run as root." >&2
 	exit 1
 fi
 
+REMOVAL_FAILURES=0
+
+FinishRun() {
+	if (( REMOVAL_FAILURES > 0 )); then
+		echo "Office-Reset: Completed with ${REMOVAL_FAILURES} removal failure(s)" >&2
+		exit 1
+	fi
+	exit 0
+}
 
 GetLoggedInUser() {
-	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/ && !/loginwindow/ { print $3 }'
 }
 
 SetHomeFolder() {
 	local target_user="$1"
 
 	LoggedInUserID=""
-	if [[ -z "$target_user" ]]; then
+	if [[ -z "$target_user" || "$target_user" == "root" || "$target_user" == "_mbsetupuser" ]]; then
+		LoggedInUser=""
 		HOME="/var/empty"
 		return 0
 	fi
@@ -39,7 +51,9 @@ SetHomeFolder() {
 	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
 		HOME="/Users/${target_user}"
 	fi
-	if [[ -z "$HOME" ]]; then
+	if [[ "$HOME" != /Users/?* || ! -d "$HOME" ]]; then
+		echo "Office-Reset: Home folder for ${target_user} is not under /Users; skipping user data" >&2
+		LoggedInUser=""
 		HOME="/var/empty"
 		return 1
 	fi
@@ -47,42 +61,47 @@ SetHomeFolder() {
 	LoggedInUserID=$(/usr/bin/id -u "$target_user" 2>/dev/null)
 }
 
-runAsUser() {
-	if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" ]]; then
-		echo "Office-Reset: No logged-in user detected; skipping user-context command: $*" >&2
+removeTarget() { # $1: rm option, $2: target
+	local target="$2"
+
+	if [[ -z "$target" || "$target" == "/" || "$target" != /* ]]; then
+		echo "Office-Reset: Refusing to remove unsafe path '${target}'" >&2
+		(( REMOVAL_FAILURES++ ))
 		return 1
 	fi
-
-	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
+	if [[ -e "$target" || -L "$target" ]]; then
+		echo "Office-Reset: Removing $target"
+		if ! /bin/rm "$1" -- "$target"; then
+			echo "Office-Reset: Failed to remove $target" >&2
+			(( REMOVAL_FAILURES++ ))
+			return 1
+		fi
+	else
+		echo "Office-Reset: Skipping missing path $target"
+	fi
 }
 
 removePathList() {
 	local target
 	for target in "$@"; do
-		if [[ -e "$target" || -L "$target" ]]; then
-			echo "Office-Reset: Removing $target"
-			/bin/rm -rf -- "$target"
-		else
-			echo "Office-Reset: Skipping missing path $target"
-		fi
+		removeTarget -rf "$target"
 	done
 }
 
 removeFileList() {
 	local target
 	for target in "$@"; do
-		if [[ -e "$target" || -L "$target" ]]; then
-			echo "Office-Reset: Removing $target"
-			/bin/rm -f -- "$target"
-		else
-			echo "Office-Reset: Skipping missing file $target"
-		fi
+		removeTarget -f "$target"
 	done
 }
 
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
+if [[ -z "$LoggedInUser" ]]; then
+	echo "Office-Reset: No eligible console user with a home under /Users; skipping Outlook data removal"
+	exit 0
+fi
 echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
 
 /usr/bin/pkill -9 'Microsoft Outlook'
@@ -93,4 +112,4 @@ removeFileList \
 
 removePathList "$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook"
 
-exit 0
+FinishRun

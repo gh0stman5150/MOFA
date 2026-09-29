@@ -4,13 +4,26 @@
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_Teams_Removal_Reinstall.zsh
 # Repository: https://github.com/cocopuff2u/MOFA/tree/main/office_reset_tools/mofa_community_maintained
-# Description: Completely removes Microsoft Teams, deletes cached user content,
-#              and reinstalls Teams from the official Microsoft source.
+# Description: Resets Microsoft Teams user data, or completely removes Teams and
+#              reinstalls it from the official Microsoft source.
 #
 # Version History:
 # 1.0.0 - Initial community-maintained release. Combines the Teams reset cleanup
 #         scope with the more robust Microsoft 365 installer download and
 #         verification flow.
+# 1.1.0 - Absorbs the retired MOFA_Community_Microsoft_Teams_Reset.zsh as MODE=reset
+#         (console user only, no download, installed app kept). Custom Teams
+#         backgrounds are backed up to ~/Teams_Backgrounds_Backup in every mode.
+#         Installer checks now require Apple's "signed" status and Gatekeeper
+#         acceptance, the installed app must carry Microsoft's team ID, and
+#         cleanup failures return a nonzero exit.
+#
+# Jamf parameters (from $4, KEY=value; unsupported keys are ignored):
+#   MODE=reinstall (default) - remove Teams for all users, then reinstall it.
+#                              "repair" and "force" are accepted as aliases.
+#   MODE=reset               - remove the console user's Teams data only.
+#   DOWNLOAD_URL_TEAMS, INSTALLATION_RETRIES, DOWNLOAD_TIMEOUT, WAIT_ATTEMPTS,
+#   WAIT_DELAY, CLEAN_ALL_USERS (reinstall mode only).
 # ============================================================
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -21,12 +34,13 @@ autoload -Uz is-at-least
 
 LOG_FILE="/var/log/MOFA_Community_Microsoft_Teams_Removal_Reinstall.log"
 LOG_TAG="MOFA Teams Remove/Reinstall"
-SCRIPT_VERSION="2026-04-13.1"
+SCRIPT_VERSION="1.1.0"
 
 APP_NAME="Microsoft Teams"
 EXPECTED_APP_PATH="/Applications/Microsoft Teams.app"
 DOWNLOAD_URL_TEAMS="https://go.microsoft.com/fwlink/?linkid=2249065"
-EXPECTED_INSTALLER_SIGNER="Microsoft Corporation (UBF8T346G9)"
+MICROSOFT_TEAM_ID="UBF8T346G9"
+EXPECTED_INSTALLER_SIGNER="Microsoft Corporation (${MICROSOFT_TEAM_ID})"
 MINIMUM_MACOS_VERSION="13.0"
 
 INSTALLATION_RETRIES=3
@@ -34,12 +48,15 @@ DOWNLOAD_TIMEOUT=900
 WAIT_ATTEMPTS=20
 WAIT_DELAY=3
 CLEAN_ALL_USERS="true"
+MODE="reinstall"
 
 TEMP_DIR=""
 PKG_PATH=""
 LoggedInUser=""
 LoggedInUserID=""
 HOME=""
+CLEANUP_FAILURES=0
+BACKGROUND_BACKUP_DIR=""
 
 log() {
   local msg="$1"
@@ -67,7 +84,10 @@ ensure_logging() {
 
 cleanup() {
   if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
-    /bin/rm -rf "$TEMP_DIR" >/dev/null 2>&1 || true
+    /bin/rm -rf -- "$TEMP_DIR" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BACKGROUND_BACKUP_DIR" && -d "$BACKGROUND_BACKUP_DIR" ]]; then
+    /bin/rm -rf -- "$BACKGROUND_BACKUP_DIR" >/dev/null 2>&1 || true
   fi
 }
 
@@ -92,12 +112,20 @@ parse_arguments() {
   fi
 
   while [[ $# -gt 0 ]]; do
+    case "$(to_lower "$1")" in
+      reset|reinstall|repair|force)
+        MODE="$1"
+        log "Configured MODE via script argument."
+        shift 1
+        continue
+        ;;
+    esac
     if [[ "$1" == *=* ]]; then
       key="${1%%=*}"
       value="${1#*=}"
 
       case "$key" in
-        DOWNLOAD_URL_TEAMS|INSTALLATION_RETRIES|DOWNLOAD_TIMEOUT|WAIT_ATTEMPTS|WAIT_DELAY|CLEAN_ALL_USERS)
+        MODE|DOWNLOAD_URL_TEAMS|INSTALLATION_RETRIES|DOWNLOAD_TIMEOUT|WAIT_ATTEMPTS|WAIT_DELAY|CLEAN_ALL_USERS)
           typeset -g "${key}=${value}"
           log "Configured ${key} via script argument."
           ;;
@@ -108,6 +136,16 @@ parse_arguments() {
     fi
     shift 1
   done
+
+  MODE="$(to_lower "${MODE//[[:space:]]/}")"
+  case "$MODE" in
+    reset|reinstall) ;;
+    repair|force) MODE="reinstall" ;;
+    *)
+      fail "Unsupported MODE '${MODE}'. Use reset or reinstall."
+      exit 2
+      ;;
+  esac
 
   [[ "$INSTALLATION_RETRIES" == <-> ]] || INSTALLATION_RETRIES=3
   [[ "$DOWNLOAD_TIMEOUT" == <-> ]] || DOWNLOAD_TIMEOUT=900
@@ -121,7 +159,7 @@ parse_arguments() {
 }
 
 GetLoggedInUser() {
-  /usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
+  /usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/ && !/loginwindow/ && $3 != "root" && $3 != "_mbsetupuser" { print $3 }'
 }
 
 SetHomeFolder() {
@@ -184,7 +222,7 @@ download_source_to_path() {
 }
 
 download_pkg() {
-  TEMP_DIR="$(/usr/bin/mktemp -d /private/tmp/teams-remove-reinstall.XXXXXX)" || {
+  TEMP_DIR="$(/usr/bin/mktemp -d /private/var/tmp/teams-remove-reinstall.XXXXXX)" || {
     fail "Unable to create a temporary working directory."
     return 1
   }
@@ -208,9 +246,15 @@ verify_pkg_signature() {
   local signature_output
 
   signature_output="$(/usr/sbin/pkgutil --check-signature "$PKG_PATH" 2>&1)"
-  if [[ "$signature_output" == *"$EXPECTED_INSTALLER_SIGNER"* ]]; then
-    log "Installer signature verified for ${EXPECTED_INSTALLER_SIGNER}."
-    return 0
+  if [[ $? -eq 0 \
+    && "$signature_output" == *"Status: signed by a developer certificate issued by Apple"* \
+    && "$signature_output" == *"Developer ID Installer: ${EXPECTED_INSTALLER_SIGNER}"* ]]; then
+    if /usr/sbin/spctl -a -t install "$PKG_PATH" >/dev/null 2>&1; then
+      log "Installer signature verified for ${EXPECTED_INSTALLER_SIGNER}."
+      return 0
+    fi
+    fail "Gatekeeper rejected the downloaded ${APP_NAME} package."
+    return 1
   fi
 
   warn "$signature_output"
@@ -235,10 +279,17 @@ remove_path() {
   [[ -n "$target" ]] || return 0
   [[ -e "$target" || -L "$target" ]] || return 0
 
-  if /bin/rm -rf "$target" >/dev/null 2>&1; then
+  if [[ "$target" != /?* ]]; then
+    warn "Refusing to remove unsafe path: $target"
+    (( CLEANUP_FAILURES++ ))
+    return 1
+  fi
+
+  if /bin/rm -rf -- "$target" >/dev/null 2>&1; then
     log "Removed $target"
   else
     warn "Failed to remove $target"
+    (( CLEANUP_FAILURES++ ))
   fi
 }
 
@@ -268,6 +319,57 @@ terminate_teams_processes() {
     'com.microsoft.teams2.notificationcenter'; do
     /usr/bin/pkill -9 "$process_name" >/dev/null 2>&1 || true
   done
+}
+
+backup_teams_backgrounds() {
+  local backgrounds_folder="$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/Backgrounds"
+
+  [[ -n "$LoggedInUser" && -d "$backgrounds_folder" ]] || return 0
+  BACKGROUND_BACKUP_DIR="$(/usr/bin/mktemp -d /private/var/tmp/mofa-teams-backgrounds.XXXXXX)" || {
+    fail "Unable to create a private Teams background backup."
+    exit 1
+  }
+  if ! /usr/bin/ditto "$backgrounds_folder" "$BACKGROUND_BACKUP_DIR/Backgrounds"; then
+    fail "Unable to back up Teams backgrounds; no changes were made."
+    exit 1
+  fi
+  log "Staged custom Teams backgrounds for ${LoggedInUser}."
+}
+
+restore_teams_backgrounds() {
+  local destination="$HOME/Teams_Backgrounds_Backup"
+  local counter=0
+
+  [[ -n "$BACKGROUND_BACKUP_DIR" && -d "$BACKGROUND_BACKUP_DIR/Backgrounds" ]] || return 0
+  while [[ -e "$destination" ]]; do
+    (( counter++ ))
+    destination="$HOME/Teams_Backgrounds_Backup${counter}"
+  done
+
+  # Copy into the user's home rather than recreating the Teams container as root.
+  if /usr/bin/ditto "$BACKGROUND_BACKUP_DIR/Backgrounds" "$destination" \
+    && /usr/sbin/chown -R "$LoggedInUser" "$destination"; then
+    log "Custom Teams backgrounds were saved to ${destination}. Re-add them in Teams > Settings > Appearance."
+  else
+    warn "Unable to save Teams backgrounds to ${destination}."
+    (( CLEANUP_FAILURES++ ))
+  fi
+}
+
+cleanup_user_temp_paths() {
+  local user_tmp
+
+  [[ -n "$LoggedInUser" ]] || return 0
+  user_tmp="$(runAsUser /usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"
+  user_tmp="${user_tmp%/}"
+  [[ "$user_tmp" == /private/var/folders/* || "$user_tmp" == /var/folders/* ]] || return 0
+
+  remove_path "$user_tmp/com.microsoft.teams"
+  remove_path "$user_tmp/com.microsoft.teams Crashes"
+  remove_path "$user_tmp/com.microsoft.teams2"
+  remove_path "$user_tmp/Teams"
+  remove_path "$user_tmp/Microsoft Teams Helper (Renderer)"
+  remove_path "$user_tmp/v8-compile-cache-${LoggedInUserID}"
 }
 
 cleanup_user_paths() {
@@ -333,13 +435,17 @@ cleanup_logged_in_user_security_state() {
   runAsUser /usr/bin/tccutil reset All com.microsoft.teams >/dev/null 2>&1 || true
 
   if [[ -n "$HOME" ]]; then
-    if ! runAsUser /usr/bin/security list-keychains 2>/dev/null | /usr/bin/grep -q 'login.keychain'; then
-      log "Adding login keychain to the active list for ${LoggedInUser}."
-      runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+    local -a keychain_search_list
+    keychain_search_list=("${(@f)$(runAsUser /usr/bin/security list-keychains -d user 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')}")
+    if [[ ${keychain_search_list[(I)*login.keychain*]} -eq 0 ]]; then
+      log "Adding login keychain to the existing search list for ${LoggedInUser}."
+      runAsUser /usr/bin/security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "${(@)keychain_search_list:#}" >/dev/null 2>&1 || true
     fi
   fi
 
+  local attempts=0
   while runAsUser /usr/bin/security find-generic-password -l 'Microsoft Teams Identities Cache' >/dev/null 2>&1; do
+    (( attempts++ < 50 )) || break
     runAsUser /usr/bin/security delete-generic-password -l 'Microsoft Teams Identities Cache' >/dev/null 2>&1 || break
   done
 
@@ -380,18 +486,23 @@ cleanup_target_users() {
   cleanup_logged_in_user_security_state
 }
 
-cleanup_system_paths() {
+cleanup_system_paths() { # $1: "keep_app" keeps the current Teams app (reset mode)
   local target_path
   local -a system_paths
 
   log "Removing system-wide ${APP_NAME} components."
   bootoutJob system "/Library/LaunchDaemons/com.microsoft.teams.TeamsUpdaterDaemon.plist"
 
-  system_paths=(
-    "/Applications/Microsoft Teams.app"
+  system_paths=()
+  if [[ "$1" != "keep_app" ]]; then
+    system_paths+=(
+      "/Applications/Microsoft Teams.app"
+      "/Applications/Microsoft Teams (work preview).app"
+    )
+  fi
+  system_paths+=(
     "/Applications/Microsoft Teams classic.app"
     "/Applications/Microsoft Teams (work or school).app"
-    "/Applications/Microsoft Teams (work preview).app"
     "/Library/Application Support/TeamsUpdaterDaemon"
     "/Library/Application Support/Microsoft/TeamsUpdaterDaemon"
     "/Library/Application Support/Teams"
@@ -415,6 +526,7 @@ app_is_healthy() {
 
   [[ -d "$EXPECTED_APP_PATH" ]] || return 1
   /usr/bin/codesign -vv --deep "$EXPECTED_APP_PATH" >/dev/null 2>&1 || return 1
+  /usr/bin/codesign -dv "$EXPECTED_APP_PATH" 2>&1 | /usr/bin/grep -q "TeamIdentifier=${MICROSOFT_TEAM_ID}" || return 1
 
   info_plist="$EXPECTED_APP_PATH/Contents/Info.plist"
   [[ -f "$info_plist" ]] || return 1
@@ -470,23 +582,39 @@ install_teams() {
   return 1
 }
 
-main() {
-  trap cleanup EXIT INT TERM
+finish() {
+  if (( CLEANUP_FAILURES > 0 )); then
+    fail "${APP_NAME} ${MODE} completed with ${CLEANUP_FAILURES} cleanup failure(s)."
+    exit 1
+  fi
+  exit 0
+}
 
-  parse_arguments "$@"
-  ensure_logging
-  log "Beginning ${APP_NAME} removal and reinstall (script version: ${SCRIPT_VERSION})."
-
-  if [[ "$EUID" -ne 0 ]]; then
-    fail "This script must be run as root."
+run_reset() {
+  if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" || "$HOME" != /Users/?* ]]; then
+    fail "A valid logged-in user with a /Users home is required for MODE=reset; no changes were made."
     exit 1
   fi
 
-  require_supported_macos
+  backup_teams_backgrounds
+  terminate_teams_processes
+  cleanup_user_paths "$LoggedInUser" "$HOME"
+  remove_path "$HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
+  cleanup_user_temp_paths
+  cleanup_logged_in_user_security_state
+  cleanup_system_paths keep_app
+  restore_teams_backgrounds
 
-  LoggedInUser="$(GetLoggedInUser)"
-  SetHomeFolder "$LoggedInUser"
-  log "Console user: ${LoggedInUser:-none}; Home Folder: ${HOME:-unknown}; Clean all users: ${CLEAN_ALL_USERS}"
+  if [[ ! -d "$EXPECTED_APP_PATH" ]]; then
+    log "${APP_NAME} is not installed. Use MODE=reinstall to install it from Jamf."
+  fi
+  log "${APP_NAME} reset completed."
+  log "Screen Recording and other Teams permissions may need to be re-approved in System Settings."
+  finish
+}
+
+run_reinstall() {
+  require_supported_macos
 
   if ! download_pkg; then
     exit 1
@@ -496,18 +624,43 @@ main() {
     exit 1
   fi
 
+  backup_teams_backgrounds
   terminate_teams_processes
   cleanup_target_users
+  cleanup_user_temp_paths
   cleanup_system_paths
+  restore_teams_backgrounds
 
   if install_teams; then
     log "${APP_NAME} removal and reinstall completed."
     log "Screen Recording and other Teams permissions may need to be re-approved in System Settings."
-    exit 0
+    finish
   fi
 
   fail "${APP_NAME} reinstall failed after ${INSTALLATION_RETRIES} attempts."
   exit 1
+}
+
+main() {
+  trap cleanup EXIT INT TERM
+
+  ensure_logging
+  parse_arguments "$@"
+  log "Beginning ${APP_NAME} ${MODE} (script version: ${SCRIPT_VERSION})."
+
+  if [[ "$EUID" -ne 0 ]]; then
+    fail "This script must be run as root."
+    exit 1
+  fi
+
+  LoggedInUser="$(GetLoggedInUser)"
+  SetHomeFolder "$LoggedInUser"
+  log "Console user: ${LoggedInUser:-none}; Home Folder: ${HOME:-unknown}; Mode: ${MODE}; Clean all users: ${CLEAN_ALL_USERS}"
+
+  if [[ "$MODE" == "reset" ]]; then
+    run_reset
+  fi
+  run_reinstall
 }
 
 if [[ "${(%):-%N}" == "$0" ]]; then

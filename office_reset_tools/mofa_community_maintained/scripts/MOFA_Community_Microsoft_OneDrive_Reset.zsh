@@ -3,18 +3,28 @@
 # ============================================================
 # Script Name: MOFA_Community_Microsoft_OneDrive_Reset.zsh
 # Repository: https://github.com/cocopuff2u/MOFA/tree/main/office_reset_tools/mofa_community_maintained
-# Description: Resets the Microsoft OneDrive
+# Description: Resets Microsoft OneDrive caches, preferences, containers and cached credentials,
+#              and optionally repairs or reinstalls OneDrive.
 #
 # Version History:
 # 1.0.0 - Based on the latest available package from *Office-Reset.com*; recreated for MOFA to continue maintenance where *Office-Reset.com* left off.
+# 1.1.0 - MOFA refresh: validate the Jamf mode, reset configuration before (re)installing so the new
+#         app is not cleaned underneath itself, download and verify the package before removing a
+#         damaged copy, drop the obsolete macOS 10.15 check, clean the console user's temp folder,
+#         append the login keychain to the search list instead of replacing it, and return nonzero
+#         when a cleanup step fails.
 #
+# Jamf parameter 4 (MODE, optionally written as MODE=value):
+#   reset     - reset OneDrive configuration only (default)
+#   repair    - also reinstall OneDrive when it is missing, damaged or older than build 23154
+#   reinstall - same as repair
+#   force     - always download and reinstall OneDrive after the reset
 # ============================================================
 
-
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+autoload -Uz is-at-least
 
 echo "Office-Reset: Starting postinstall for Reset_OneDrive"
-autoload is-at-least
 
 if [[ $EUID -ne 0 ]]; then
 	echo "Office-Reset: This script must be run as root." >&2
@@ -22,20 +32,54 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 APP_NAME="Microsoft OneDrive"
+APP_PATH="/Applications/OneDrive.app"
+# Standalone OneDrive package. Ring-specific links: 861009 (Deferred), 861010 (Upcoming Deferred);
+# see latest_raw_files/macos_standalone_onedrive_all.xml.
 DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=861011"
-OS_VERSION=$(sw_vers -productVersion)
+# CFBundleVersion is formatted like 26168.0830.0006; builds older than 23154 are treated as ancient.
+ONEDRIVE_MINIMUM_BUILD="23154.0"
+MICROSOFT_TEAM_ID="UBF8T346G9"
+MINIMUM_MACOS_VERSION="14.4"
+REMOVAL_FAILURES=0
+WORK_DIR=""
+
 MODE="${4:-${MODE:-reset}}"
+MODE="${MODE//[[:space:]]/}"
+MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
 MODE=${MODE:l}
+case "$MODE" in
+	reset|repair|reinstall|force) ;;
+	*)
+		echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
+		exit 2
+		;;
+esac
+
+CleanupWorkDir() {
+	if [[ -n "$WORK_DIR" && "$WORK_DIR" == /private/var/tmp/mofa_reset.* && -d "$WORK_DIR" ]]; then
+		/bin/rm -rf -- "$WORK_DIR"
+	fi
+}
+trap CleanupWorkDir EXIT
+
+FinishRun() {
+	if (( REMOVAL_FAILURES > 0 )); then
+		echo "Office-Reset: Completed with ${REMOVAL_FAILURES} removal failure(s)" >&2
+		exit 1
+	fi
+	exit 0
+}
 
 GetLoggedInUser() {
-	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/&&!/loginwindow/{print $3}'
+	/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk '/Name :/ && !/loginwindow/ { print $3 }'
 }
 
 SetHomeFolder() {
 	local target_user="$1"
 
 	LoggedInUserID=""
-	if [[ -z "$target_user" ]]; then
+	if [[ -z "$target_user" || "$target_user" == "root" || "$target_user" == "_mbsetupuser" ]]; then
+		LoggedInUser=""
 		HOME="/var/empty"
 		return 0
 	fi
@@ -44,7 +88,9 @@ SetHomeFolder() {
 	if [[ -z "$HOME" && -d "/Users/${target_user}" ]]; then
 		HOME="/Users/${target_user}"
 	fi
-	if [[ -z "$HOME" ]]; then
+	if [[ "$HOME" != /Users/?* || ! -d "$HOME" ]]; then
+		echo "Office-Reset: Home folder for ${target_user} is not under /Users; skipping user data" >&2
+		LoggedInUser=""
 		HOME="/var/empty"
 		return 1
 	fi
@@ -61,125 +107,145 @@ runAsUser() {
 	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
-removePathList() {
-	local target
-	for target in "$@"; do
-		if [[ "$target" != /* || "$target" == "/" ]]; then
-			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
-			return 1
-		fi
-		/bin/rm -rf -- "$target"
-	done
-}
+GetUserTempFolder() {
+	local user_tmp
 
-removeFileList() {
-	local target
-	for target in "$@"; do
-		if [[ "$target" != /* || "$target" == "/" ]]; then
-			echo "Office-Reset: Refusing unsafe removal target: ${target:-<empty>}" >&2
-			return 1
-		fi
-		/bin/rm -f -- "$target"
-	done
+	user_tmp=$(runAsUser /usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null) || user_tmp=""
+	user_tmp="${user_tmp%/}"
+	if [[ "$user_tmp" == /private/var/folders/* || "$user_tmp" == /var/folders/* ]]; then
+		printf '%s\n' "$user_tmp"
+	else
+		printf '%s\n' "/var/empty"
+	fi
 }
 
 shouldReinstall() {
 	[[ "$MODE" == "reinstall" || "$MODE" == "repair" || "$MODE" == "force" ]]
 }
 
-RepairApp() {
-	DOWNLOAD_FOLDER="/Users/Shared/OnDemandInstaller/"
-	if [ -d "$DOWNLOAD_FOLDER" ]; then
-		rm -rf "$DOWNLOAD_FOLDER"
+removeTarget() { # $1: rm option, $2: target
+	local target="$2"
+
+	if [[ -z "$target" || "$target" == "/" || "$target" != /* ]]; then
+		echo "Office-Reset: Refusing to remove unsafe path '${target}'" >&2
+		(( REMOVAL_FAILURES++ ))
+		return 1
 	fi
-	mkdir -p "$DOWNLOAD_FOLDER"
+	if [[ -e "$target" || -L "$target" ]]; then
+		echo "Office-Reset: Removing $target"
+		if ! /bin/rm "$1" -- "$target"; then
+			echo "Office-Reset: Failed to remove $target" >&2
+			(( REMOVAL_FAILURES++ ))
+			return 1
+		fi
+	else
+		echo "Office-Reset: Skipping missing path $target"
+	fi
+}
 
-	CDN_PKG_URL=$(/usr/bin/nscurl --location --head $DOWNLOAD_URL --dump-header - | awk '/Location/' | cut -d ' ' -f2 | tail -1 | awk '{$1=$1};1')
-	echo "Office-Reset: Package to download is ${CDN_PKG_URL}"
-	CDN_PKG_NAME=$(/usr/bin/basename "${CDN_PKG_URL}")
+removePathList() {
+	local target
+	for target in "$@"; do
+		removeTarget -rf "$target"
+	done
+}
 
-	CDN_PKG_SIZE=$(/usr/bin/nscurl --location --head $DOWNLOAD_URL --dump-header - | awk '/Content-Length/' | cut -d ' ' -f2 | tail -1 | awk '{$1=$1};1')
-	CDN_PKG_MB=$(/bin/expr ${CDN_PKG_SIZE} / 1000 / 1000)
-	echo "Office-Reset: Download package is ${CDN_PKG_MB} megabytes in size"
+removeFileList() {
+	local target
+	for target in "$@"; do
+		removeTarget -f "$target"
+	done
+}
 
-	echo "Office-Reset: Starting ${APP_NAME} package download"
-	if ! /usr/bin/nscurl --background --download --large-download --location --download-directory "$DOWNLOAD_FOLDER" "$DOWNLOAD_URL"; then
+DownloadAndVerifyPackage() {
+	local pkg_url="$DOWNLOAD_URL"
+	local signature
+	local signature_rc
+
+	if ! is-at-least "$MINIMUM_MACOS_VERSION" "$(/usr/bin/sw_vers -productVersion)"; then
+		echo "Office-Reset: Warning: macOS is older than ${MINIMUM_MACOS_VERSION}; the current ${APP_NAME} package may not install"
+	fi
+
+	WORK_DIR=$(/usr/bin/mktemp -d /private/var/tmp/mofa_reset.XXXXXX) || WORK_DIR=""
+	if [[ -z "$WORK_DIR" ]]; then
+		echo "Office-Reset: Package download failed: unable to create a temporary folder" >&2
+		exit 1
+	fi
+	PKG_PATH="${WORK_DIR}/package.pkg"
+
+	echo "Office-Reset: Starting ${APP_NAME} package download from ${pkg_url}"
+	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" "$pkg_url"; then
 		echo "Office-Reset: Package download failed" >&2
 		exit 1
 	fi
-	echo "Office-Reset: Finished package download"
-
-	LOCAL_PKG_SIZE=$(cd "${DOWNLOAD_FOLDER}" && stat -qf%z "${CDN_PKG_NAME}")
-	if [[ "${LOCAL_PKG_SIZE}" == "${CDN_PKG_SIZE}" ]]; then
-		echo "Office-Reset: Downloaded package is wholesome"
-	else
-		echo "Office-Reset: Downloaded package is malformed. Local file size: ${LOCAL_PKG_SIZE}"
-		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
+	if [[ ! -s "$PKG_PATH" ]]; then
+		echo "Office-Reset: Downloaded package is malformed (empty file)" >&2
 		exit 1
 	fi
+	echo "Office-Reset: Finished package download ($(/usr/bin/stat -f%z "$PKG_PATH") bytes)"
 
-	LOCAL_PKG_SIGNING=$(/usr/sbin/pkgutil --check-signature "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" | awk '/Developer ID Installer'/ | cut -d ':' -f 2 | awk '{$1=$1};1')
-	if [[ "${LOCAL_PKG_SIGNING}" == "Microsoft Corporation (UBF8T346G9)" ]]; then
-		echo "Office-Reset: Downloaded package is signed by Microsoft"
-	else
-		echo "Office-Reset: Downloaded package is not signed by Microsoft"
-		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
+	signature=$(/usr/sbin/pkgutil --check-signature "$PKG_PATH" 2>&1)
+	signature_rc=$?
+	if (( signature_rc != 0 )) \
+		|| [[ "$signature" != *"Status: signed by a developer certificate issued by Apple"* ]] \
+		|| [[ "$signature" != *"Developer ID Installer: Microsoft Corporation (${MICROSOFT_TEAM_ID})"* ]]; then
+		echo "Office-Reset: Downloaded package is not signed by Microsoft" >&2
+		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${pkg_url}" >&2
 		exit 1
 	fi
+	if ! /usr/sbin/spctl -a -t install "$PKG_PATH" >/dev/null 2>&1; then
+		echo "Office-Reset: Downloaded package is not signed in a way Gatekeeper accepts" >&2
+		exit 1
+	fi
+	echo "Office-Reset: Downloaded package is signed by Microsoft"
+}
 
+InstallVerifiedPackage() {
 	echo "Office-Reset: Starting package install"
-	/usr/sbin/installer -pkg "${DOWNLOAD_FOLDER}${CDN_PKG_NAME}" -target /
-	if [ $? -eq 0 ]; then
+	if /usr/sbin/installer -pkg "$PKG_PATH" -target /; then
 		echo "Office-Reset: Package installed successfully"
 	else
-		echo "Office-Reset: Package installation failed"
-		echo "Office-Reset: Please manually download and install ${APP_NAME} from ${CDN_PKG_URL}"
+		echo "Office-Reset: Package installation failed" >&2
+		echo "Office-Reset: Please manually download and install ${APP_NAME}" >&2
 		exit 1
 	fi
+}
 
+AppSignatureProblem() {
+	local output
+	local codesign_rc
+
+	output=$(/usr/bin/codesign --verify --deep -vv "$APP_PATH" 2>&1)
+	codesign_rc=$?
+	if (( codesign_rc != 0 )); then
+		printf '%s\n' "$output"
+		return 0
+	fi
+	if ! /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -q "TeamIdentifier=${MICROSOFT_TEAM_ID}"; then
+		printf '%s\n' "app is not signed by Microsoft team ${MICROSOFT_TEAM_ID}"
+		return 0
+	fi
+	return 1
+}
+
+RepairApp() { # $1: "replace" removes the installed copy after the new package is verified
+	DownloadAndVerifyPackage
+	if [[ "$1" == "replace" ]]; then
+		removePathList "$APP_PATH"
+	fi
+	InstallVerifiedPackage
 }
 
 ## Main
 LoggedInUser=$(GetLoggedInUser)
 SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME; Mode: $MODE"
+USER_TMPDIR=$(GetUserTempFolder)
+echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
 
 /usr/bin/pkill -9 'OneDrive'
 /usr/bin/pkill -9 'FinderSync'
 /usr/bin/pkill -9 'OneDriveStandaloneUpdater'
 /usr/bin/pkill -9 'OneDriveUpdater'
-
-if [ -d "/Applications/OneDrive.app" ]; then
-	APP_VERSION=$(defaults read /Applications/OneDrive.app/Contents/Info.plist CFBundleVersion)
-	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if ! is-at-least 23154.0 $APP_VERSION && is-at-least 10.15 $OS_VERSION; then
-		if shouldReinstall; then
-			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reinstall mode enabled, updating it now"
-			RepairApp
-		else
-			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reset mode will not reinstall automatically"
-		fi
-	fi
-	echo "Office-Reset: Checking the app bundle for corruption"
-	/usr/bin/codesign -vv --deep /Applications/OneDrive.app
-	if [ $? -gt 0 ]; then
-		if shouldReinstall; then
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be removed and reinstalled"
-			/bin/rm -rf /Applications/OneDrive.app
-			RepairApp
-		else
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
-		fi
-	else
-		echo "Office-Reset: Codesign passed successfully"
-	fi
-else
-	echo "Office-Reset: ${APP_NAME} was not found in the default location"
-	if shouldReinstall; then
-		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
-		RepairApp
-	fi
-fi
 
 echo "Office-Reset: Removing configuration data for ${APP_NAME}"
 removePathList \
@@ -219,8 +285,8 @@ removePathList \
 	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveStandaloneSuite" \
 	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite" \
 	"$HOME/Library/Group Containers/UBF8T346G9.Kfm" \
-	"${TMPDIR:-/private/tmp}/com.microsoft.OneDrive" \
-	"${TMPDIR:-/private/tmp}/com.microsoft.OneDrive.FinderSync"
+	"$USER_TMPDIR/com.microsoft.OneDrive" \
+	"$USER_TMPDIR/com.microsoft.OneDrive.FinderSync"
 
 removeFileList \
 	"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
@@ -242,17 +308,17 @@ removeFileList \
 	"/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
 	"/Library/Managed Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
 	"/Library/Managed Preferences/com.microsoft.OneDriveUpdater.plist" \
-	"${TMPDIR:-/private/tmp}/OneDriveVersion.xml"
+	"$USER_TMPDIR/OneDriveVersion.xml"
 
 if [[ -n "$LoggedInUser" ]]; then
-	KeychainHasLogin=$(runAsUser /usr/bin/security list-keychains 2>/dev/null | grep 'login.keychain' || true)
-	if [ "$KeychainHasLogin" = "" ]; then
-		echo "Office-Reset: Adding user login keychain to list"
-		runAsUser /usr/bin/security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+	KeychainSearchList=("${(@f)$(runAsUser /usr/bin/security list-keychains -d user 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')}")
+	if [[ ${KeychainSearchList[(I)*login.keychain*]} -eq 0 ]]; then
+		echo "Office-Reset: Adding user login keychain to the existing search list"
+		runAsUser /usr/bin/security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "${(@)KeychainSearchList:#}" >/dev/null 2>&1 || true
 	fi
 
-	echo "Display list-keychains for logged-in user"
-	runAsUser /usr/bin/security list-keychains || true
+	echo "Office-Reset: Keychain search list for logged-in user:"
+	runAsUser /usr/bin/security list-keychains -d user || true
 
 	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK' 2>/dev/null || true
 	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK' 2>/dev/null || true
@@ -273,4 +339,38 @@ if [[ -n "$KEYCHAIN_2_PATH" ]]; then
 	/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
 fi
 
-exit 0
+if [[ "$MODE" == "force" ]]; then
+	echo "Office-Reset: Force mode enabled, reinstalling ${APP_NAME}"
+	RepairApp replace
+elif [[ -d "$APP_PATH" ]]; then
+	APP_VERSION=$(/usr/bin/defaults read "${APP_PATH}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
+	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
+	if [[ -n "$APP_VERSION" ]] && ! is-at-least "$ONEDRIVE_MINIMUM_BUILD" "$APP_VERSION"; then
+		if shouldReinstall; then
+			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reinstall mode enabled, updating it now"
+			RepairApp
+		else
+			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reset mode will not reinstall automatically"
+		fi
+	fi
+	echo "Office-Reset: Checking the app bundle for corruption"
+	if SIGNATURE_PROBLEM=$(AppSignatureProblem); then
+		echo "Office-Reset: The ${APP_NAME} app bundle is damaged and reporting error ${SIGNATURE_PROBLEM}"
+		if shouldReinstall; then
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be reinstalled"
+			RepairApp replace
+		else
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+		fi
+	else
+		echo "Office-Reset: Codesign passed successfully"
+	fi
+else
+	echo "Office-Reset: ${APP_NAME} was not found in the default location"
+	if shouldReinstall; then
+		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+		RepairApp
+	fi
+fi
+
+FinishRun

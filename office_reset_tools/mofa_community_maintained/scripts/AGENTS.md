@@ -25,8 +25,9 @@ behavior. Use Self Service or login context for these operations.
 ## Parameters, safety and error handling
 
 - Preserve each script's argument parser. Custom inputs begin at $4; most
-  reset tools accept reset/repair/reinstall/force. Teams variants have their
-  own KEY=value contracts. Do not evaluate parameters as shell code.
+  reset tools accept reset/repair/reinstall/force. The Teams script has its
+  own KEY=value contract (MODE=reset|reinstall). Do not evaluate parameters
+  as shell code.
 - Keep signature validation for downloaded Microsoft packages and explicit
   nonzero exits for download, cleanup and installation failures.
 - Reset/removal can delete user state or credentials. Preserve target/path
@@ -36,6 +37,8 @@ behavior. Use Self Service or login context for these operations.
 - Keep Teams removal/reinstall's dedicated log and other scripts' Jamf policy
   output as documented. Do not replace failures with blanket success exits.
 - Extend active scripts here; historical archived copies are references.
+  Retired scripts are listed in README.md and must not be reintroduced
+  (enforced by tests/test_shell_safety.py).
 
 ## Validation and changes
 
