@@ -13,6 +13,9 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+# Keys and XML elements that only record when a generator ran. The history
+# generators stamp last_scan_date on every hourly run.
+GENERATED_TIMESTAMP_KEYS = {"last_updated", "lastUpdated", "last_scan_date"}
 README_TIMESTAMP = re.compile(
     rb"(Last Updated:\s*<code[^>]*>).*?(</code>)",
     flags=re.IGNORECASE,
@@ -35,7 +38,7 @@ def strip_generated_timestamps(value: Any) -> Any:
         return {
             key: strip_generated_timestamps(item)
             for key, item in value.items()
-            if key not in {"last_updated", "lastUpdated"}
+            if key not in GENERATED_TIMESTAMP_KEYS
         }
     if isinstance(value, list):
         return [strip_generated_timestamps(item) for item in value]
@@ -59,7 +62,7 @@ def normalize(path: Path, content: bytes) -> bytes:
         root = ET.fromstring(content)
         for parent in root.iter():
             for child in list(parent):
-                if child.tag in {"last_updated", "lastUpdated"}:
+                if child.tag in GENERATED_TIMESTAMP_KEYS:
                     parent.remove(child)
         return ET.tostring(root, encoding="utf-8")
     return content

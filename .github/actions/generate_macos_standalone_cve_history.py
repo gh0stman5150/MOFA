@@ -21,6 +21,9 @@ url = 'https://learn.microsoft.com/en-us/officeupdates/release-notes-office-for-
 # Fetch the HTML content
 logging.info('Fetching HTML content from URL: %s', url)
 response = http_get(url, timeout=30)
+# An error or maintenance page must fail the run, not be parsed into an empty
+# feed that would replace the published CVE history.
+response.raise_for_status()
 html_data = response.text
 logging.info('HTML content fetched successfully')
 
@@ -102,6 +105,10 @@ for h2 in soup.find_all('h2'):
 
     parsed_data.append(section_data)
     logging.info('Parsed data for date: %s', date_text)
+
+if not parsed_data:
+    logging.error('No release sections were parsed from %s; keeping the existing CVE history files.', url)
+    raise SystemExit(1)
 
 # Create the root element for the XML
 root = ET.Element('Updates')

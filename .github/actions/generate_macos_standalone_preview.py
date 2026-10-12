@@ -413,6 +413,10 @@ def fetch_and_process(app_name, config):
         if app_name in existing_data:
             logging.info(f"Reverting to existing data for {app_name}.")
             add_to_combined_xml(app_name, existing_data[app_name]["data"])
+        else:
+            # Without cached data the package would silently vanish from the
+            # published feed; log at ERROR so run_generators.py fails the run.
+            logging.error(f"No cached data for {app_name}; it would be dropped from the feed.")
 
 # Function to process XML data
 def process_xml_data(app_data, config):
@@ -467,39 +471,46 @@ def process_json_data(app_data, config):
 
     return extracted_data
 
-# Function to compute SHA1 hash
-def compute_sha1(url):
+# Installers are multi-gigabyte; each URL is streamed once and both digests
+# are computed from that single pass. Results are cached per URL so the
+# separate SHA1 and SHA256 lookups (and identical full/app-only URLs) never
+# trigger a second download.
+_HASH_CACHE = {}
+
+
+def compute_hashes(url):
+    if not isinstance(url, str) or not url.strip() or url.strip().upper() == "N/A":
+        return "N/A", "N/A"
+    if url in _HASH_CACHE:
+        return _HASH_CACHE[url]
     try:
-        logging.info(f"Computing SHA1 for {url}...")
+        logging.info(f"Computing SHA1 and SHA256 for {url}...")
         # Use allow_redirects=True to follow redirects
         response = http_get(url, stream=True, allow_redirects=True, timeout=30)
         response.raise_for_status()  # Raise exception for HTTP errors
-        hasher = sha1()
-        for chunk in response.iter_content(chunk_size=8192):
-            hasher.update(chunk)
-        sha1_hash = hasher.hexdigest()
-        logging.info(f"SHA1 for {url}: {sha1_hash}")
-        return sha1_hash
+        sha1_hasher = sha1()
+        sha256_hasher = sha256()
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            sha1_hasher.update(chunk)
+            sha256_hasher.update(chunk)
+        result = (sha1_hasher.hexdigest(), sha256_hasher.hexdigest())
+        logging.info(f"SHA1 for {url}: {result[0]}")
+        logging.info(f"SHA256 for {url}: {result[1]}")
     except Exception as e:
-        logging.warning(f"Error computing SHA1 for {url}: {e}")
-        return "N/A"
+        logging.warning(f"Error computing SHA1/SHA256 for {url}: {e}")
+        result = ("N/A", "N/A")
+    _HASH_CACHE[url] = result
+    return result
+
+
+# Function to compute SHA1 hash
+def compute_sha1(url):
+    return compute_hashes(url)[0]
+
 
 # Function to compute SHA256 hash
 def compute_sha256(url):
-    try:
-        logging.info(f"Computing SHA256 for {url}...")
-        # Use allow_redirects=True to follow redirects
-        response = http_get(url, stream=True, allow_redirects=True, timeout=30)
-        response.raise_for_status()  # Raise exception for HTTP errors
-        hasher = sha256()
-        for chunk in response.iter_content(chunk_size=8192):
-            hasher.update(chunk)
-        sha256_hash = hasher.hexdigest()
-        logging.info(f"SHA256 for {url}: {sha256_hash}")
-        return sha256_hash
-    except Exception as e:
-        logging.warning(f"Error computing SHA256 for {url}: {e}")
-        return "N/A"
+    return compute_hashes(url)[1]
 
 def add_to_combined_xml(app_name, data):
     logging.info(f"Adding {app_name} to combined XML...")

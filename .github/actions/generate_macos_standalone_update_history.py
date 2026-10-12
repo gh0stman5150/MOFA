@@ -39,8 +39,10 @@ def scrape_office_mac_updates(url):
                 target_table = table
                 break
 
+        # A layout change must fail the run (run_generators.py treats ERROR as
+        # failure) rather than leave the feed silently stale.
         if not target_table:
-            logging.warning("Target table not found on the page.")
+            logging.error("Target table not found on the page; keeping the existing update history files.")
             return
 
         logging.info("Target table found.")
@@ -57,6 +59,10 @@ def scrape_office_mac_updates(url):
                 else:
                     row_data[headers[i]] = [{"name": cell.text.strip(), "url": "NA"}]
             rows.append(row_data)
+
+        if not rows:
+            logging.error("The update history table had no rows; keeping the existing update history files.")
+            return
 
         logging.info("Extracted rows from the target table.")
 
@@ -141,7 +147,7 @@ def scrape_office_mac_updates(url):
     except requests.exceptions.RequestException as e:
         logging.warning(f"Error fetching the URL: {e}")
     except Exception as e:
-        logging.warning(f"An error occurred: {e}")
+        logging.error(f"An error occurred while building the update history: {e}")
 
 # URL of the webpage to scrape
 url = "https://learn.microsoft.com/en-us/officeupdates/update-history-office-for-mac"
