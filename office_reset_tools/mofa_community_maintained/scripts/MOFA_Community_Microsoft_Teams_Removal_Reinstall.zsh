@@ -17,9 +17,19 @@
 #         Installer checks now require Apple's "signed" status and Gatekeeper
 #         acceptance, the installed app must carry Microsoft's team ID, and
 #         cleanup failures return a nonzero exit.
+# 1.2.0 - All work (including setopt PIPE_FAIL) runs from main(), which starts only
+#         when the file is executed (as Jamf does); sourcing the file only defines
+#         its functions, so tests can exercise them with stubbed commands. Teams
+#         backgrounds are copied in the console user's context rather than as root,
+#         so the backup can never contain files that user could not already read,
+#         and a symlinked Backgrounds folder is not backed up. Per-user Teams data
+#         is removed only from existing homes under /Users, and the user's temp
+#         folder only after a successful lookup. The download URL is passed to
+#         curl after "--".
 #
 # Jamf parameters (from $4, KEY=value; unsupported keys are ignored):
-#   MODE=reinstall (default) - remove Teams for all users, then reinstall it.
+#   MODE=reinstall (default) - remove Teams for all users with a home under /Users,
+#                              then reinstall it.
 #                              "repair" and "force" are accepted as aliases.
 #   MODE=reset               - remove the console user's Teams data only.
 #   DOWNLOAD_URL_TEAMS, INSTALLATION_RETRIES, DOWNLOAD_TIMEOUT, WAIT_ATTEMPTS,
@@ -28,13 +38,11 @@
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-setopt PIPE_FAIL
-
 autoload -Uz is-at-least
 
 LOG_FILE="/var/log/MOFA_Community_Microsoft_Teams_Removal_Reinstall.log"
 LOG_TAG="MOFA Teams Remove/Reinstall"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 
 APP_NAME="Microsoft Teams"
 EXPECTED_APP_PATH="/Applications/Microsoft Teams.app"
@@ -42,6 +50,8 @@ DOWNLOAD_URL_TEAMS="https://go.microsoft.com/fwlink/?linkid=2249065"
 MICROSOFT_TEAM_ID="UBF8T346G9"
 EXPECTED_INSTALLER_SIGNER="Microsoft Corporation (${MICROSOFT_TEAM_ID})"
 MINIMUM_MACOS_VERSION="13.0"
+# Per-user Teams data is removed only from existing homes inside this folder.
+USER_HOMES_DIR="/Users"
 
 INSTALLATION_RETRIES=3
 DOWNLOAD_TIMEOUT=900
@@ -73,6 +83,13 @@ warn() {
 
 fail() {
   log "ERROR: $1"
+}
+
+RequireRoot() {
+  if [[ "$EUID" -ne 0 ]]; then
+    fail "This script must be run as root."
+    exit 1
+  fi
 }
 
 ensure_logging() {
@@ -218,7 +235,7 @@ download_source_to_path() {
     --retry-delay 10 \
     --max-time "$DOWNLOAD_TIMEOUT" \
     --output "$destination" \
-    "$source"
+    -- "$source"
 }
 
 download_pkg() {
@@ -293,14 +310,16 @@ remove_path() {
   fi
 }
 
-home_cleanup_allowed() {
+home_cleanup_allowed() { # $1: home folder; true only for an existing user home under /Users
   local target_home="$1"
 
   [[ -n "$target_home" ]] || return 1
   [[ "$target_home" != "/" ]] || return 1
-  [[ "$target_home" != "/Users" ]] || return 1
-  [[ "$target_home" != "/Users/Shared" ]] || return 1
-  [[ "$target_home" != "/var/empty" ]] || return 1
+  # This also rejects /Users itself, /var/empty and every other home outside /Users.
+  [[ "$target_home" == "${USER_HOMES_DIR}"/?* ]] || return 1
+  # Empty, "." and ".." components could alias /Users, /Users/Shared or leave /Users.
+  [[ "${target_home}/" != *//* && "${target_home}/" != */./* && "${target_home}/" != */../* ]] || return 1
+  [[ "${target_home:l}" != "${USER_HOMES_DIR:l}/shared" ]] || return 1
   [[ -d "$target_home" ]]
 }
 
@@ -325,11 +344,18 @@ backup_teams_backgrounds() {
   local backgrounds_folder="$HOME/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/Backgrounds"
 
   [[ -n "$LoggedInUser" && -d "$backgrounds_folder" ]] || return 0
+  if [[ -L "$backgrounds_folder" ]]; then
+    warn "Not backing up Teams backgrounds for ${LoggedInUser}: the Backgrounds folder is a symbolic link."
+    return 0
+  fi
   BACKGROUND_BACKUP_DIR="$(/usr/bin/mktemp -d /private/var/tmp/mofa-teams-backgrounds.XXXXXX)" || {
     fail "Unable to create a private Teams background backup."
     exit 1
   }
-  if ! /usr/bin/ditto "$backgrounds_folder" "$BACKGROUND_BACKUP_DIR/Backgrounds"; then
+  # The folder is inside the user's own container, so copy it as that user, never as root:
+  # a link the user planted there then cannot expose files the user could not already read.
+  if ! /usr/sbin/chown "$LoggedInUser" "$BACKGROUND_BACKUP_DIR" \
+    || ! runAsUser /usr/bin/ditto "$backgrounds_folder" "$BACKGROUND_BACKUP_DIR/Backgrounds"; then
     fail "Unable to back up Teams backgrounds; no changes were made."
     exit 1
   fi
@@ -346,9 +372,9 @@ restore_teams_backgrounds() {
     destination="$HOME/Teams_Backgrounds_Backup${counter}"
   done
 
-  # Copy into the user's home rather than recreating the Teams container as root.
-  if /usr/bin/ditto "$BACKGROUND_BACKUP_DIR/Backgrounds" "$destination" \
-    && /usr/sbin/chown -R "$LoggedInUser" "$destination"; then
+  # Copy into the user's home, as the user, rather than recreating the Teams container as
+  # root; the copy is then the user's own and needs no ownership change.
+  if runAsUser /usr/bin/ditto "$BACKGROUND_BACKUP_DIR/Backgrounds" "$destination"; then
     log "Custom Teams backgrounds were saved to ${destination}. Re-add them in Teams > Settings > Appearance."
   else
     warn "Unable to save Teams backgrounds to ${destination}."
@@ -360,7 +386,8 @@ cleanup_user_temp_paths() {
   local user_tmp
 
   [[ -n "$LoggedInUser" ]] || return 0
-  user_tmp="$(runAsUser /usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"
+  # Trust only a successful lookup in the user's context.
+  user_tmp="$(runAsUser /usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || return 0
   user_tmp="${user_tmp%/}"
   [[ "$user_tmp" == /private/var/folders/* || "$user_tmp" == /var/folders/* ]] || return 0
 
@@ -591,7 +618,7 @@ finish() {
 }
 
 run_reset() {
-  if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" || "$HOME" != /Users/?* ]]; then
+  if [[ -z "$LoggedInUser" || -z "$LoggedInUserID" || "$HOME" != "${USER_HOMES_DIR}"/?* ]]; then
     fail "A valid logged-in user with a /Users home is required for MODE=reset; no changes were made."
     exit 1
   fi
@@ -641,17 +668,17 @@ run_reinstall() {
   exit 1
 }
 
-main() {
+main() { # Jamf passes $1-$3; KEY=value settings start at $4 (see parse_arguments)
+  # A pipeline fails when any command in it fails. Set here so sourcing the file changes no option.
+  setopt PIPE_FAIL
+  # Set here, not in a helper: zsh runs an EXIT trap set inside a function when that function returns.
   trap cleanup EXIT INT TERM
 
   ensure_logging
   parse_arguments "$@"
   log "Beginning ${APP_NAME} ${MODE} (script version: ${SCRIPT_VERSION})."
 
-  if [[ "$EUID" -ne 0 ]]; then
-    fail "This script must be run as root."
-    exit 1
-  fi
+  RequireRoot
 
   LoggedInUser="$(GetLoggedInUser)"
   SetHomeFolder "$LoggedInUser"
@@ -663,7 +690,6 @@ main() {
   run_reinstall
 }
 
-if [[ "${(%):-%N}" == "$0" ]]; then
-  main "$@"
-fi
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi
 

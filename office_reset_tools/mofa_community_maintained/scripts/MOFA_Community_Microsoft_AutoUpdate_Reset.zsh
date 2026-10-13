@@ -13,6 +13,9 @@
 #         reset, flush cfprefsd before rewriting preferences, clean the console user's temp folder,
 #         register current Microsoft apps (Copilot, Quick Assist, Remote Help) and drop retired
 #         Skype for Business and Defender ATP names, and return nonzero when a cleanup step fails.
+# 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
+#         does); sourcing the file only defines its functions, so tests can exercise them with
+#         stubbed commands. curl receives the package URL after "--".
 #
 # Jamf parameter 4 (MODE, optionally written as MODE=value):
 #   reset     - reset MAU configuration only (default)
@@ -24,13 +27,6 @@
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 autoload -Uz is-at-least
 
-echo "Office-Reset: Starting postinstall for Reset_AutoUpdate"
-
-if [[ $EUID -ne 0 ]]; then
-	echo "Office-Reset: This script must be run as root." >&2
-	exit 1
-fi
-
 APP_NAME="Microsoft AutoUpdate"
 APP_PATH="/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app"
 DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=830196"
@@ -41,24 +37,32 @@ MINIMUM_MACOS_VERSION="12.0"
 REMOVAL_FAILURES=0
 WORK_DIR=""
 
-MODE="${4:-${MODE:-reset}}"
-MODE="${MODE//[[:space:]]/}"
-MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
-MODE=${MODE:l}
-case "$MODE" in
-	reset|repair|reinstall|force) ;;
-	*)
-		echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
-		exit 2
-		;;
-esac
+RequireRoot() {
+	if [[ $EUID -ne 0 ]]; then
+		echo "Office-Reset: This script must be run as root." >&2
+		exit 1
+	fi
+}
+
+ParseMode() { # $1: Jamf parameter 4 (falls back to $MODE, then reset); sets MODE or exits 2
+	MODE="${1:-${MODE:-reset}}"
+	MODE="${MODE//[[:space:]]/}"
+	MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
+	MODE=${MODE:l}
+	case "$MODE" in
+		reset|repair|reinstall|force) ;;
+		*)
+			echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
+			exit 2
+			;;
+	esac
+}
 
 CleanupWorkDir() {
 	if [[ -n "$WORK_DIR" && "$WORK_DIR" == /private/var/tmp/mofa_reset.* && -d "$WORK_DIR" ]]; then
 		/bin/rm -rf -- "$WORK_DIR"
 	fi
 }
-trap CleanupWorkDir EXIT
 
 FinishRun() {
 	if (( REMOVAL_FAILURES > 0 )); then
@@ -233,7 +237,7 @@ DownloadAndVerifyPackage() {
 	PKG_PATH="${WORK_DIR}/package.pkg"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download from ${pkg_url}"
-	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" "$pkg_url"; then
+	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" -- "$pkg_url"; then
 		echo "Office-Reset: Package download failed" >&2
 		exit 1
 	fi
@@ -295,116 +299,126 @@ RepairApp() { # $1: "replace" removes the installed copy after the new package i
 	InstallVerifiedPackage
 }
 
-## Main
-LoggedInUser=$(GetLoggedInUser)
-SetHomeFolder "$LoggedInUser"
-USER_TMPDIR=$(GetUserTempFolder)
-echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
+main() { # Jamf passes $1-$3; $4 is MODE
+	echo "Office-Reset: Starting postinstall for Reset_AutoUpdate"
+	RequireRoot
+	ParseMode "${4:-}"
+	# Set here, not in a helper: zsh runs an EXIT trap set inside a function when that function returns.
+	trap CleanupWorkDir EXIT
 
-echo "Office-Reset: Stopping update services"
-/usr/bin/pkill -9 'Microsoft AutoUpdate'
-/usr/bin/pkill -9 'Microsoft Update Assistant'
-/usr/bin/pkill -9 'Microsoft AU Daemon'
-/usr/bin/pkill -9 'Microsoft AU Bootstrapper'
-/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.helper'
-/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.bootstrapper.helper'
+	LoggedInUser=$(GetLoggedInUser)
+	SetHomeFolder "$LoggedInUser"
+	USER_TMPDIR=$(GetUserTempFolder)
+	echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
 
-bootoutJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
-bootoutJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
-bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
+	echo "Office-Reset: Stopping update services"
+	/usr/bin/pkill -9 'Microsoft AutoUpdate'
+	/usr/bin/pkill -9 'Microsoft Update Assistant'
+	/usr/bin/pkill -9 'Microsoft AU Daemon'
+	/usr/bin/pkill -9 'Microsoft AU Bootstrapper'
+	/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.helper'
+	/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.bootstrapper.helper'
 
-echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-removeFileList \
-	"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
-	"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
-	"/Library/Preferences/com.microsoft.autoupdate2.plist" \
-	"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
-	"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
-	"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
-	"$USER_TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate.fba.txt" \
-	"$USER_TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
+	bootoutJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
+	bootoutJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
+	bootoutJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
 
-removePathList \
-	"$HOME/Library/Caches/com.microsoft.autoupdate2" \
-	"$HOME/Library/Caches/com.microsoft.autoupdate.fba" \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2" \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba" \
-	"$HOME/Library/Application Support/Microsoft AU Daemon" \
-	"/Library/Application Support/Microsoft/MERP2.0" \
-	"$USER_TMPDIR/MSauClones" \
-	"/Library/Caches/com.microsoft.autoupdate.helper" \
-	"/Library/Caches/com.microsoft.autoupdate.fba" \
-	"/Applications/.Microsoft Word.app.installBackup" \
-	"/Applications/.Microsoft Excel.app.installBackup" \
-	"/Applications/.Microsoft PowerPoint.app.installBackup" \
-	"/Applications/.Microsoft Outlook.app.installBackup" \
-	"/Applications/.Microsoft OneNote.app.installBackup"
+	echo "Office-Reset: Removing configuration data for ${APP_NAME}"
+	removeFileList \
+		"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
+		"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+		"/Library/Preferences/com.microsoft.autoupdate2.plist" \
+		"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+		"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
+		"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+		"$USER_TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate.fba.txt" \
+		"$USER_TMPDIR/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
 
-/usr/bin/killall cfprefsd >/dev/null 2>&1 || true
-/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 AcknowledgedDataCollectionPolicy -string 'RequiredDataOnly'
+	removePathList \
+		"$HOME/Library/Caches/com.microsoft.autoupdate2" \
+		"$HOME/Library/Caches/com.microsoft.autoupdate.fba" \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2" \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba" \
+		"$HOME/Library/Application Support/Microsoft AU Daemon" \
+		"/Library/Application Support/Microsoft/MERP2.0" \
+		"$USER_TMPDIR/MSauClones" \
+		"/Library/Caches/com.microsoft.autoupdate.helper" \
+		"/Library/Caches/com.microsoft.autoupdate.fba" \
+		"/Applications/.Microsoft Word.app.installBackup" \
+		"/Applications/.Microsoft Excel.app.installBackup" \
+		"/Applications/.Microsoft PowerPoint.app.installBackup" \
+		"/Applications/.Microsoft Outlook.app.installBackup" \
+		"/Applications/.Microsoft OneNote.app.installBackup"
 
-if [[ "$MODE" == "force" ]]; then
-	echo "Office-Reset: Force mode enabled, reinstalling ${APP_NAME}"
-	RepairApp replace
-elif [[ -d "$APP_PATH" ]]; then
-	APP_VERSION=$(/usr/bin/defaults read "${APP_PATH}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
-	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if [[ -n "$APP_VERSION" ]] && ! is-at-least "${MAU_RECOMMENDED_VERSION}" "$APP_VERSION"; then
-		if shouldReinstall; then
-			echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reinstall mode enabled, updating it now"
-			RepairApp
-		else
-			echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reset mode will not reinstall automatically"
+	/usr/bin/killall cfprefsd >/dev/null 2>&1 || true
+	/usr/bin/defaults write /Library/Preferences/com.microsoft.autoupdate2 AcknowledgedDataCollectionPolicy -string 'RequiredDataOnly'
+
+	if [[ "$MODE" == "force" ]]; then
+		echo "Office-Reset: Force mode enabled, reinstalling ${APP_NAME}"
+		RepairApp replace
+	elif [[ -d "$APP_PATH" ]]; then
+		APP_VERSION=$(/usr/bin/defaults read "${APP_PATH}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
+		echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
+		if [[ -n "$APP_VERSION" ]] && ! is-at-least "${MAU_RECOMMENDED_VERSION}" "$APP_VERSION"; then
+			if shouldReinstall; then
+				echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reinstall mode enabled, updating it now"
+				RepairApp
+			else
+				echo "Office-Reset: The installed version of ${APP_NAME} is older than the recommended version ${MAU_RECOMMENDED_VERSION}. Reset mode will not reinstall automatically"
+			fi
 		fi
-	fi
-	echo "Office-Reset: Checking the app bundle for corruption"
-	if SIGNATURE_PROBLEM=$(AppSignatureProblem); then
-		echo "Office-Reset: The ${APP_NAME} app bundle is damaged and reporting error ${SIGNATURE_PROBLEM}"
-		if shouldReinstall; then
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be reinstalled"
-			RepairApp replace
+		echo "Office-Reset: Checking the app bundle for corruption"
+		if SIGNATURE_PROBLEM=$(AppSignatureProblem); then
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and reporting error ${SIGNATURE_PROBLEM}"
+			if shouldReinstall; then
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be reinstalled"
+				RepairApp replace
+			else
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			fi
 		else
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			echo "Office-Reset: Codesign passed successfully"
 		fi
 	else
-		echo "Office-Reset: Codesign passed successfully"
+		echo "Office-Reset: ${APP_NAME} was not found in the default location"
+		if shouldReinstall; then
+			echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+			RepairApp
+		fi
 	fi
-else
-	echo "Office-Reset: ${APP_NAME} was not found in the default location"
-	if shouldReinstall; then
-		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
-		RepairApp
-	fi
-fi
 
-echo "Office-Reset: Creating new preferences"
-# The "2019" suffixes are Microsoft's current MAU application IDs.
-registerMauApp "$APP_PATH" "MSau04" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Word.app" "MSWD2019" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Excel.app" "XCEL2019" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft PowerPoint.app" "PPT32019" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Outlook.app" "OPIM2019" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft OneNote.app" "ONMC2019" "com.microsoft.office"
-registerMauApp "/Applications/OneDrive.app" "ONDR18" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Teams.app" "TEAMS21" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Teams (work or school).app" "TEAMS21" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Teams (work preview).app" "TEAMS21" "com.microsoft.office"
-registerMauApp "/Applications/Microsoft Edge.app" "EDGE01"
-registerMauApp "/Applications/Microsoft Edge Beta.app" "EDBT01"
-registerMauApp "/Applications/Microsoft Edge Canary.app" "EDCN01"
-registerMauApp "/Applications/Microsoft Edge Dev.app" "EDDV01"
-registerMauApp "/Applications/Windows App.app" "MSRD10"
-registerMauApp "/Applications/Microsoft Remote Desktop.app" "MSRD10"
-registerMauApp "/Applications/Company Portal.app" "IMCP01"
-registerMauApp "/Applications/Microsoft Defender.app" "WDAV00"
-registerMauApp "/Applications/Microsoft 365 Copilot.app" "MSCP10"
-registerMauApp "/Applications/Microsoft Quick Assist.app" "MSQA01"
-registerMauApp "/Applications/Microsoft Remote Help.app" "MSRH01"
-/usr/bin/killall cfprefsd >/dev/null 2>&1 || true
+	echo "Office-Reset: Creating new preferences"
+	# The "2019" suffixes are Microsoft's current MAU application IDs.
+	registerMauApp "$APP_PATH" "MSau04" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Word.app" "MSWD2019" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Excel.app" "XCEL2019" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft PowerPoint.app" "PPT32019" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Outlook.app" "OPIM2019" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft OneNote.app" "ONMC2019" "com.microsoft.office"
+	registerMauApp "/Applications/OneDrive.app" "ONDR18" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Teams.app" "TEAMS21" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Teams (work or school).app" "TEAMS21" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Teams (work preview).app" "TEAMS21" "com.microsoft.office"
+	registerMauApp "/Applications/Microsoft Edge.app" "EDGE01"
+	registerMauApp "/Applications/Microsoft Edge Beta.app" "EDBT01"
+	registerMauApp "/Applications/Microsoft Edge Canary.app" "EDCN01"
+	registerMauApp "/Applications/Microsoft Edge Dev.app" "EDDV01"
+	registerMauApp "/Applications/Windows App.app" "MSRD10"
+	registerMauApp "/Applications/Microsoft Remote Desktop.app" "MSRD10"
+	registerMauApp "/Applications/Company Portal.app" "IMCP01"
+	registerMauApp "/Applications/Microsoft Defender.app" "WDAV00"
+	registerMauApp "/Applications/Microsoft 365 Copilot.app" "MSCP10"
+	registerMauApp "/Applications/Microsoft Quick Assist.app" "MSQA01"
+	registerMauApp "/Applications/Microsoft Remote Help.app" "MSRH01"
+	/usr/bin/killall cfprefsd >/dev/null 2>&1 || true
 
-echo "Office-Reset: Restarting update services"
-bootstrapJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
-bootstrapJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
-bootstrapJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
+	echo "Office-Reset: Restarting update services"
+	bootstrapJob system "/Library/LaunchDaemons/com.microsoft.autoupdate.helper.plist"
+	bootstrapJob gui "/Library/LaunchAgents/com.microsoft.update.agent.plist"
+	bootstrapJob gui "/Library/LaunchAgents/com.microsoft.autoupdate.helper.plist"
 
-FinishRun
+	FinishRun
+}
+
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi

@@ -21,9 +21,9 @@ on:
       - "office_reset_tools/mofa_community_maintained/scripts/**"
       - "latest_raw_files/**"
 
-concurrency:
-  group: mofa-generated-data
-  cancel-in-progress: false
+# No workflow-level concurrency: push and pull request validation must never
+# queue behind, or be cancelled by, an hourly refresh. Only the update job,
+# which writes the generated-data branch, is serialized (see below).
 
 permissions:
   contents: read
@@ -56,6 +56,11 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # One refresh writes automation/mofa-generated-data at a time. Scheduled and
+    # dispatched runs share this group; validation jobs never join it.
+    concurrency:
+      group: mofa-generated-data
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
@@ -82,13 +87,23 @@ jobs:
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! python .github/actions/has_substantive_changes.py; then
-            echo "Only generated timestamps changed; no pull request needed."
-            git restore -- README.md latest_raw_files
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          # 0 substantive, 1 timestamps only, anything else is a checker error.
+          status=0
+          python .github/actions/has_substantive_changes.py || status=$?
+          case "$status" in
+            0)
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              ;;
+            1)
+              echo "Only generated timestamps changed; no pull request needed."
+              git restore -- README.md latest_raw_files
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::has_substantive_changes.py failed with exit code $status; failing instead of treating the generated changes as timestamp-only."
+              exit 1
+              ;;
+          esac
       - name: Create or update generated-data pull request
         if: steps.substantive.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
@@ -100,7 +115,11 @@ jobs:
             latest_raw_files
           commit-message: "chore: update generated Microsoft release data"
           title: "chore: update generated Microsoft release data"
+          # The default GITHUB_TOKEN opens this pull request, so GitHub starts no
+          # workflows for it. The body links the run where validation happened.
           body: |
-            Automated MOFA release-data refresh.
+            Automated MOFA release-data refresh from workflow run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (attempt ${{ github.run_attempt }}).
 
-            Generated content has passed the repository validation suite and contains changes beyond timestamps.
+            Validation ran in that run, not on this pull request: it regenerated the data, passed the repository test suite (`python -m pytest -q`) on the generated files and found changes beyond generated timestamps. Review its logs before merging.
+
+            This pull request carries no status checks of its own: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for changes made with that token. To run pull request validation here, close and reopen this pull request.

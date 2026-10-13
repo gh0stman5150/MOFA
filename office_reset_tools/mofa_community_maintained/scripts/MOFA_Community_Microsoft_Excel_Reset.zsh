@@ -12,6 +12,11 @@
 #         a private temporary folder, capture codesign errors, read MDM-managed MAU settings,
 #         clean the console user's temp folder instead of root's, and return nonzero when a
 #         cleanup step fails.
+# 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
+#         does); sourcing the file only defines its functions, so tests can exercise them with
+#         stubbed commands. Custom MAU manifest settings (ChannelName, ManifestServer) are read
+#         only from managed and system preferences, never the console user's own preferences;
+#         the manifest server must be an https:// URL, and curl receives every URL after "--".
 #
 # Jamf parameter 4 (MODE, optionally written as MODE=value):
 #   reset     - remove configuration data only (default)
@@ -24,13 +29,6 @@
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 autoload -Uz is-at-least
 
-echo "Office-Reset: Starting postinstall for Reset_Excel"
-
-if [[ $EUID -ne 0 ]]; then
-	echo "Office-Reset: This script must be run as root." >&2
-	exit 1
-fi
-
 APP_NAME="Microsoft Excel"
 APP_PATH="/Applications/${APP_NAME}.app"
 DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=525135"
@@ -38,27 +36,39 @@ DOWNLOAD_URL="https://go.microsoft.com/fwlink/?linkid=525135"
 MAU_APP_ID="XCEL2019"
 MICROSOFT_TEAM_ID="UBF8T346G9"
 MINIMUM_MACOS_VERSION="14.0"
+# Custom-manifest settings choose what root downloads, so they are read only from these
+# administrator-controlled locations and never from the console user's own preferences.
+MANAGED_PREFERENCES_DIR="/Library/Managed Preferences"
+SYSTEM_PREFERENCES_DIR="/Library/Preferences"
 REMOVAL_FAILURES=0
 WORK_DIR=""
 
-MODE="${4:-${MODE:-reset}}"
-MODE="${MODE//[[:space:]]/}"
-MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
-MODE=${MODE:l}
-case "$MODE" in
-	reset|repair|reinstall|force) ;;
-	*)
-		echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
-		exit 2
-		;;
-esac
+RequireRoot() {
+	if [[ $EUID -ne 0 ]]; then
+		echo "Office-Reset: This script must be run as root." >&2
+		exit 1
+	fi
+}
+
+ParseMode() { # $1: Jamf parameter 4 (falls back to $MODE, then reset); sets MODE or exits 2
+	MODE="${1:-${MODE:-reset}}"
+	MODE="${MODE//[[:space:]]/}"
+	MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
+	MODE=${MODE:l}
+	case "$MODE" in
+		reset|repair|reinstall|force) ;;
+		*)
+			echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
+			exit 2
+			;;
+	esac
+}
 
 CleanupWorkDir() {
 	if [[ -n "$WORK_DIR" && "$WORK_DIR" == /private/var/tmp/mofa_reset.* && -d "$WORK_DIR" ]]; then
 		/bin/rm -rf -- "$WORK_DIR"
 	fi
 }
-trap CleanupWorkDir EXIT
 
 FinishRun() {
 	if (( REMOVAL_FAILURES > 0 )); then
@@ -117,19 +127,16 @@ GetUserTempFolder() {
 	fi
 }
 
-GetPrefValue() { # $1: domain, $2: key
+GetPrefValue() { # $1: domain, $2: key; managed and system preferences only
 	local value=""
 	local plist
 
-	for plist in "/Library/Managed Preferences/${LoggedInUser:-.none}/$1.plist" "/Library/Managed Preferences/$1.plist" "/Library/Preferences/$1.plist"; do
+	for plist in "${MANAGED_PREFERENCES_DIR}/${LoggedInUser:-.none}/$1.plist" "${MANAGED_PREFERENCES_DIR}/$1.plist" "${SYSTEM_PREFERENCES_DIR}/$1.plist"; do
 		if [[ -f "$plist" ]]; then
 			value=$(/usr/bin/defaults read "$plist" "$2" 2>/dev/null) || value=""
 			[[ -n "$value" ]] && break
 		fi
 	done
-	if [[ -z "$value" ]]; then
-		value=$(runAsUser /usr/bin/defaults read "$1" "$2" 2>/dev/null) || value=""
-	fi
 
 	printf '%s\n' "$value"
 }
@@ -193,8 +200,12 @@ removeFindMatches() {
 	fi
 }
 
-ReadManifestString() { # $1: URL, $2: key
-	/usr/bin/curl -fsSL --connect-timeout 30 --max-time 120 "$1" 2>/dev/null \
+ReadManifestString() { # $1: https URL, $2: key
+	if [[ "$1" == -* || "$1" != https://?* ]]; then
+		echo "Office-Reset: Refusing to read a manifest from a URL that is not https://" >&2
+		return 1
+	fi
+	/usr/bin/curl -fsSL --connect-timeout 30 --max-time 120 -- "$1" 2>/dev/null \
 		| /usr/bin/grep -A1 -m1 "$2" \
 		| /usr/bin/grep 'string' \
 		| /usr/bin/sed -e 's,.*<string>\([^<]*\)</string>.*,\1,g'
@@ -212,6 +223,11 @@ GetCustomManifestVersion() {
 		MANIFEST_SERVER="${MANIFEST_SERVER%/}"
 		echo "Office-Reset: Found custom ManifestServer ${MANIFEST_SERVER}"
 		[[ -z "$MANIFEST_SERVER" ]] && return 0
+		if [[ "$MANIFEST_SERVER" == -* || "$MANIFEST_SERVER" != https://?* ]]; then
+			echo "Office-Reset: Ignoring the custom ManifestServer because it is not an https:// URL" >&2
+			MANIFEST_SERVER=""
+			return 0
+		fi
 		FULL_UPDATER=$(ReadManifestString "${MANIFEST_SERVER}/0409${MAU_APP_ID}.xml" 'FullUpdaterLocation')
 		echo "Office-Reset: Found custom FullUpdaterLocation ${FULL_UPDATER}"
 		if [[ "${FULL_UPDATER}" == "https://"* ]]; then
@@ -245,7 +261,7 @@ DownloadAndVerifyPackage() {
 	PKG_PATH="${WORK_DIR}/package.pkg"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download from ${pkg_url}"
-	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" "$pkg_url"; then
+	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" -- "$pkg_url"; then
 		echo "Office-Reset: Package download failed" >&2
 		exit 1
 	fi
@@ -353,49 +369,59 @@ CheckInstalledApp() {
 	fi
 }
 
-## Main
-LoggedInUser=$(GetLoggedInUser)
-SetHomeFolder "$LoggedInUser"
-USER_TMPDIR=$(GetUserTempFolder)
-echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
+main() { # Jamf passes $1-$3; $4 is MODE
+	echo "Office-Reset: Starting postinstall for Reset_Excel"
+	RequireRoot
+	ParseMode "${4:-}"
+	# Set here, not in a helper: zsh runs an EXIT trap set inside a function when that function returns.
+	trap CleanupWorkDir EXIT
 
-/usr/bin/pkill -9 'Microsoft Excel'
+	LoggedInUser=$(GetLoggedInUser)
+	SetHomeFolder "$LoggedInUser"
+	USER_TMPDIR=$(GetUserTempFolder)
+	echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
 
-CheckInstalledApp
+	/usr/bin/pkill -9 'Microsoft Excel'
 
-echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-removeFileList \
-	"/Library/Preferences/com.microsoft.Excel.plist" \
-	"/Library/Managed Preferences/com.microsoft.Excel.plist" \
-	"$HOME/Library/Preferences/com.microsoft.Excel.plist" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
+	CheckInstalledApp
 
-removePathList \
-	"$HOME/Library/Containers/com.microsoft.Excel" \
-	"$HOME/Library/Application Scripts/com.microsoft.Excel" \
-	"/Applications/.Microsoft Excel.app.installBackup" \
-	"/Library/Application Support/Microsoft/Office365/User Content.localized/Startup.localized/Excel" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Startup.localized/Excel" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/ComRPC32" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/TemporaryItems"
+	echo "Office-Reset: Removing configuration data for ${APP_NAME}"
+	removeFileList \
+		"/Library/Preferences/com.microsoft.Excel.plist" \
+		"/Library/Managed Preferences/com.microsoft.Excel.plist" \
+		"$HOME/Library/Preferences/com.microsoft.Excel.plist" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/MicrosoftRegistrationDB.reg"
 
-removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xlt"
-removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xltx"
-removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xltm"
-removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xlt"
-removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xltx"
-removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xltm"
+	removePathList \
+		"$HOME/Library/Containers/com.microsoft.Excel" \
+		"$HOME/Library/Application Scripts/com.microsoft.Excel" \
+		"/Applications/.Microsoft Excel.app.installBackup" \
+		"/Library/Application Support/Microsoft/Office365/User Content.localized/Startup.localized/Excel" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Startup.localized/Excel" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/mip_policy" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/ComRPC32" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/TemporaryItems"
 
-# The certificate lives in the user's login keychain, so delete it in the user's context.
-if [[ -n "$LoggedInUser" ]]; then
-	if runAsUser /usr/bin/security delete-certificate -c 'Microsoft.Office.Excel.ProtectedDataServices' >/dev/null 2>&1; then
-		echo "Office-Reset: Removed the Excel ProtectedDataServices certificate"
-	else
-		echo "Office-Reset: Excel ProtectedDataServices certificate not present"
+	removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xlt"
+	removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xltx"
+	removeFindMatches "/Library/Application Support/Microsoft/Office365/User Content.localized/Templates.localized" "*.xltm"
+	removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xlt"
+	removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xltx"
+	removeFindMatches "$HOME/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Templates.localized" "*.xltm"
+
+	# The certificate lives in the user's login keychain, so delete it in the user's context.
+	if [[ -n "$LoggedInUser" ]]; then
+		if runAsUser /usr/bin/security delete-certificate -c 'Microsoft.Office.Excel.ProtectedDataServices' >/dev/null 2>&1; then
+			echo "Office-Reset: Removed the Excel ProtectedDataServices certificate"
+		else
+			echo "Office-Reset: Excel ProtectedDataServices certificate not present"
+		fi
 	fi
-fi
 
-removePathList "$USER_TMPDIR/com.microsoft.Excel"
+	removePathList "$USER_TMPDIR/com.microsoft.Excel"
 
-FinishRun
+	FinishRun
+}
+
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi

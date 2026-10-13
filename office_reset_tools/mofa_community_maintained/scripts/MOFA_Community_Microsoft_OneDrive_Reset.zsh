@@ -13,6 +13,12 @@
 #         damaged copy, drop the obsolete macOS 10.15 check, clean the console user's temp folder,
 #         append the login keychain to the search list instead of replacing it, and return nonzero
 #         when a cleanup step fails.
+# 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
+#         does); sourcing the file only defines its functions, so tests can exercise them with
+#         stubbed commands. OneDrive's Finder extension is stopped by its own name ("OneDrive
+#         Finder Integration") instead of the pattern "FinderSync", which also killed other
+#         vendors' Finder Sync extensions (Dropbox, Google Drive, Box, ...). curl receives the
+#         package URL after "--".
 #
 # Jamf parameter 4 (MODE, optionally written as MODE=value):
 #   reset     - reset OneDrive configuration only (default)
@@ -23,13 +29,6 @@
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 autoload -Uz is-at-least
-
-echo "Office-Reset: Starting postinstall for Reset_OneDrive"
-
-if [[ $EUID -ne 0 ]]; then
-	echo "Office-Reset: This script must be run as root." >&2
-	exit 1
-fi
 
 APP_NAME="Microsoft OneDrive"
 APP_PATH="/Applications/OneDrive.app"
@@ -43,24 +42,32 @@ MINIMUM_MACOS_VERSION="14.4"
 REMOVAL_FAILURES=0
 WORK_DIR=""
 
-MODE="${4:-${MODE:-reset}}"
-MODE="${MODE//[[:space:]]/}"
-MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
-MODE=${MODE:l}
-case "$MODE" in
-	reset|repair|reinstall|force) ;;
-	*)
-		echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
-		exit 2
-		;;
-esac
+RequireRoot() {
+	if [[ $EUID -ne 0 ]]; then
+		echo "Office-Reset: This script must be run as root." >&2
+		exit 1
+	fi
+}
+
+ParseMode() { # $1: Jamf parameter 4 (falls back to $MODE, then reset); sets MODE or exits 2
+	MODE="${1:-${MODE:-reset}}"
+	MODE="${MODE//[[:space:]]/}"
+	MODE="${MODE#[Mm][Oo][Dd][Ee]=}"
+	MODE=${MODE:l}
+	case "$MODE" in
+		reset|repair|reinstall|force) ;;
+		*)
+			echo "Office-Reset: Unsupported mode '${MODE}'. Use reset, repair, reinstall or force." >&2
+			exit 2
+			;;
+	esac
+}
 
 CleanupWorkDir() {
 	if [[ -n "$WORK_DIR" && "$WORK_DIR" == /private/var/tmp/mofa_reset.* && -d "$WORK_DIR" ]]; then
 		/bin/rm -rf -- "$WORK_DIR"
 	fi
 }
-trap CleanupWorkDir EXIT
 
 FinishRun() {
 	if (( REMOVAL_FAILURES > 0 )); then
@@ -174,7 +181,7 @@ DownloadAndVerifyPackage() {
 	PKG_PATH="${WORK_DIR}/package.pkg"
 
 	echo "Office-Reset: Starting ${APP_NAME} package download from ${pkg_url}"
-	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" "$pkg_url"; then
+	if ! /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$PKG_PATH" -- "$pkg_url"; then
 		echo "Office-Reset: Package download failed" >&2
 		exit 1
 	fi
@@ -236,141 +243,156 @@ RepairApp() { # $1: "replace" removes the installed copy after the new package i
 	InstallVerifiedPackage
 }
 
-## Main
-LoggedInUser=$(GetLoggedInUser)
-SetHomeFolder "$LoggedInUser"
-USER_TMPDIR=$(GetUserTempFolder)
-echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
+main() { # Jamf passes $1-$3; $4 is MODE
+	local -a KeychainSearchList
+	local KEYCHAIN_2_PATH APP_VERSION SIGNATURE_PROBLEM
 
-/usr/bin/pkill -9 'OneDrive'
-/usr/bin/pkill -9 'FinderSync'
-/usr/bin/pkill -9 'OneDriveStandaloneUpdater'
-/usr/bin/pkill -9 'OneDriveUpdater'
+	echo "Office-Reset: Starting postinstall for Reset_OneDrive"
+	RequireRoot
+	ParseMode "${4:-}"
+	# Set here, not in a helper: zsh runs an EXIT trap set inside a function when that function returns.
+	trap CleanupWorkDir EXIT
 
-echo "Office-Reset: Removing configuration data for ${APP_NAME}"
-removePathList \
-	"$HOME/Library/Caches/OneDrive" \
-	"$HOME/Library/Caches/com.microsoft.OneDrive" \
-	"$HOME/Library/Caches/com.microsoft.OneDriveUpdater" \
-	"$HOME/Library/Caches/com.microsoft.OneDriveStandaloneUpdater" \
-	"$HOME/Library/Caches/com.microsoft.SyncReporter" \
-	"$HOME/Library/Caches/com.microsoft.SharePoint-mac" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater" \
-	"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac" \
-	"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater" \
-	"$HOME/Library/WebKit/com.microsoft.OneDrive" \
-	"$HOME/Library/Containers/com.microsoft.OneDrive-mac" \
-	"$HOME/Library/Containers/com.microsoft.OneDrive.FinderSync" \
-	"$HOME/Library/Containers/com.microsoft.OneDrive-mac.FinderSync" \
-	"$HOME/Library/Containers/com.microsoft.OneDriveLauncher" \
-	"$HOME/Library/Containers/com.microsoft.OneDrive.FileProvider" \
-	"$HOME/Library/Logs/OneDrive" \
-	"/Library/Logs/Microsoft/OneDrive" \
-	"$HOME/Library/Application Support/OneDrive" \
-	"$HOME/Library/Application Support/com.microsoft.OneDrive" \
-	"$HOME/Library/Application Support/com.microsoft.OneDriveUpdater" \
-	"$HOME/Library/Application Support/com.microsoft.OneDriveStandaloneUpdater" \
-	"$HOME/Library/Application Support/com.microsoft.SharePoint-mac" \
-	"$HOME/Library/Application Support/OneDriveUpdater" \
-	"$HOME/Library/Application Support/OneDriveStandaloneUpdater" \
-	"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FinderSync" \
-	"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FileProvider" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveStandaloneSuite" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveSyncClientSuite" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.Kfm" \
-	"$HOME/Library/Group Containers/UBF8T346G9.OfficeOneDriveSyncIntegration" \
-	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveStandaloneSuite" \
-	"$HOME/Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Kfm" \
-	"$USER_TMPDIR/com.microsoft.OneDrive" \
-	"$USER_TMPDIR/com.microsoft.OneDrive.FinderSync"
+	LoggedInUser=$(GetLoggedInUser)
+	SetHomeFolder "$LoggedInUser"
+	USER_TMPDIR=$(GetUserTempFolder)
+	echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME; Temp Folder: $USER_TMPDIR; Mode: $MODE"
 
-removeFileList \
-	"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
-	"$HOME/Library/Preferences/com.microsoft.OneDrive.plist" \
-	"$HOME/Library/Preferences/com.microsoft.SharePoint-mac.plist" \
-	"$HOME/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
-	"$HOME/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
-	"$HOME/Library/Preferences/UBF8T346G9.OneDriveStandaloneSuite.plist" \
-	"$HOME/Library/Preferences/UBF8T346G9.OfficeOneDriveSyncIntegration.plist" \
-	"/Library/Preferences/com.microsoft.OneDrive.plist" \
-	"/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
-	"/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
-	"/Library/Managed Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
-	"/Library/Managed Preferences/com.microsoft.OneDriveUpdater.plist" \
-	"$USER_TMPDIR/OneDriveVersion.xml"
+	# 'OneDrive' also matches the Finder extension; the second line names it exactly. Never use a
+	# generic pattern such as 'FinderSync', which matches other vendors' Finder Sync extensions.
+	/usr/bin/pkill -9 'OneDrive'
+	/usr/bin/pkill -9 'OneDrive Finder Integration'
+	/usr/bin/pkill -9 'OneDriveStandaloneUpdater'
+	/usr/bin/pkill -9 'OneDriveUpdater'
 
-if [[ -n "$LoggedInUser" ]]; then
-	KeychainSearchList=("${(@f)$(runAsUser /usr/bin/security list-keychains -d user 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')}")
-	if [[ ${KeychainSearchList[(I)*login.keychain*]} -eq 0 ]]; then
-		echo "Office-Reset: Adding user login keychain to the existing search list"
-		runAsUser /usr/bin/security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "${(@)KeychainSearchList:#}" >/dev/null 2>&1 || true
-	fi
+	echo "Office-Reset: Removing configuration data for ${APP_NAME}"
+	removePathList \
+		"$HOME/Library/Caches/OneDrive" \
+		"$HOME/Library/Caches/com.microsoft.OneDrive" \
+		"$HOME/Library/Caches/com.microsoft.OneDriveUpdater" \
+		"$HOME/Library/Caches/com.microsoft.OneDriveStandaloneUpdater" \
+		"$HOME/Library/Caches/com.microsoft.SyncReporter" \
+		"$HOME/Library/Caches/com.microsoft.SharePoint-mac" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDrive" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater" \
+		"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac" \
+		"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater" \
+		"$HOME/Library/WebKit/com.microsoft.OneDrive" \
+		"$HOME/Library/Containers/com.microsoft.OneDrive-mac" \
+		"$HOME/Library/Containers/com.microsoft.OneDrive.FinderSync" \
+		"$HOME/Library/Containers/com.microsoft.OneDrive-mac.FinderSync" \
+		"$HOME/Library/Containers/com.microsoft.OneDriveLauncher" \
+		"$HOME/Library/Containers/com.microsoft.OneDrive.FileProvider" \
+		"$HOME/Library/Logs/OneDrive" \
+		"/Library/Logs/Microsoft/OneDrive" \
+		"$HOME/Library/Application Support/OneDrive" \
+		"$HOME/Library/Application Support/com.microsoft.OneDrive" \
+		"$HOME/Library/Application Support/com.microsoft.OneDriveUpdater" \
+		"$HOME/Library/Application Support/com.microsoft.OneDriveStandaloneUpdater" \
+		"$HOME/Library/Application Support/com.microsoft.SharePoint-mac" \
+		"$HOME/Library/Application Support/OneDriveUpdater" \
+		"$HOME/Library/Application Support/OneDriveStandaloneUpdater" \
+		"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FinderSync" \
+		"$HOME/Library/Application Scripts/com.microsoft.OneDrive.FileProvider" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveStandaloneSuite" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.OneDriveSyncClientSuite" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.Kfm" \
+		"$HOME/Library/Group Containers/UBF8T346G9.OfficeOneDriveSyncIntegration" \
+		"$HOME/Library/Group Containers/UBF8T346G9.OneDriveStandaloneSuite" \
+		"$HOME/Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Kfm" \
+		"$USER_TMPDIR/com.microsoft.OneDrive" \
+		"$USER_TMPDIR/com.microsoft.OneDrive.FinderSync"
 
-	echo "Office-Reset: Keychain search list for logged-in user:"
-	runAsUser /usr/bin/security list-keychains -d user || true
+	removeFileList \
+		"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveUpdater.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.SharePoint-mac.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.SyncReporter.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+		"$HOME/Library/Preferences/com.microsoft.OneDrive.plist" \
+		"$HOME/Library/Preferences/com.microsoft.SharePoint-mac.plist" \
+		"$HOME/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+		"$HOME/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
+		"$HOME/Library/Preferences/UBF8T346G9.OneDriveStandaloneSuite.plist" \
+		"$HOME/Library/Preferences/UBF8T346G9.OfficeOneDriveSyncIntegration.plist" \
+		"/Library/Preferences/com.microsoft.OneDrive.plist" \
+		"/Library/Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+		"/Library/Preferences/com.microsoft.OneDriveUpdater.plist" \
+		"/Library/Managed Preferences/com.microsoft.OneDriveStandaloneUpdater.plist" \
+		"/Library/Managed Preferences/com.microsoft.OneDriveUpdater.plist" \
+		"$USER_TMPDIR/OneDriveVersion.xml"
 
-	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
-	runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.adalcache' 2>/dev/null || true
-else
-	echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
-fi
-removePathList "$HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
-
-KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
-if [[ -n "$KEYCHAIN_2_PATH" ]]; then
-	/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
-fi
-
-if [[ "$MODE" == "force" ]]; then
-	echo "Office-Reset: Force mode enabled, reinstalling ${APP_NAME}"
-	RepairApp replace
-elif [[ -d "$APP_PATH" ]]; then
-	APP_VERSION=$(/usr/bin/defaults read "${APP_PATH}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
-	echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
-	if [[ -n "$APP_VERSION" ]] && ! is-at-least "$ONEDRIVE_MINIMUM_BUILD" "$APP_VERSION"; then
-		if shouldReinstall; then
-			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reinstall mode enabled, updating it now"
-			RepairApp
-		else
-			echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reset mode will not reinstall automatically"
+	if [[ -n "$LoggedInUser" ]]; then
+		KeychainSearchList=("${(@f)$(runAsUser /usr/bin/security list-keychains -d user 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')}")
+		if [[ ${KeychainSearchList[(I)*login.keychain*]} -eq 0 ]]; then
+			echo "Office-Reset: Adding user login keychain to the existing search list"
+			runAsUser /usr/bin/security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "${(@)KeychainSearchList:#}" >/dev/null 2>&1 || true
 		fi
+
+		echo "Office-Reset: Keychain search list for logged-in user:"
+		runAsUser /usr/bin/security list-keychains -d user || true
+
+		runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.FinderSync.HockeySDK' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDrive.HockeySDK' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveUpdater.HockeySDK' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.OneDriveStandaloneUpdater.HockeySDK' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential Business - Business1' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'OneDrive Standalone Cached Credential' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -s 'com.microsoft.onedrive.cookies' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -s 'OneAuthAccount' 2>/dev/null || true
+		runAsUser /usr/bin/security delete-generic-password -l 'com.microsoft.adalcache' 2>/dev/null || true
+	else
+		echo "Office-Reset: No logged-in user detected; skipping user keychain cleanup"
 	fi
-	echo "Office-Reset: Checking the app bundle for corruption"
-	if SIGNATURE_PROBLEM=$(AppSignatureProblem); then
-		echo "Office-Reset: The ${APP_NAME} app bundle is damaged and reporting error ${SIGNATURE_PROBLEM}"
-		if shouldReinstall; then
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be reinstalled"
-			RepairApp replace
+	removePathList "$HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
+
+	KEYCHAIN_2_PATH=$(/usr/bin/find "$HOME/Library/Keychains" -name keychain-2.db 2>/dev/null | /usr/bin/head -n 1)
+	if [[ -n "$KEYCHAIN_2_PATH" ]]; then
+		/usr/bin/sqlite3 "$KEYCHAIN_2_PATH" "DELETE FROM genp WHERE agrp='UBF8T346G9.com.microsoft.identity.universalstorage';" >/dev/null 2>&1 || true
+	fi
+
+	if [[ "$MODE" == "force" ]]; then
+		echo "Office-Reset: Force mode enabled, reinstalling ${APP_NAME}"
+		RepairApp replace
+	elif [[ -d "$APP_PATH" ]]; then
+		APP_VERSION=$(/usr/bin/defaults read "${APP_PATH}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
+		echo "Office-Reset: Found version ${APP_VERSION} of ${APP_NAME}"
+		if [[ -n "$APP_VERSION" ]] && ! is-at-least "$ONEDRIVE_MINIMUM_BUILD" "$APP_VERSION"; then
+			if shouldReinstall; then
+				echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reinstall mode enabled, updating it now"
+				RepairApp
+			else
+				echo "Office-Reset: The installed version of ${APP_NAME} is ancient. Reset mode will not reinstall automatically"
+			fi
+		fi
+		echo "Office-Reset: Checking the app bundle for corruption"
+		if SIGNATURE_PROBLEM=$(AppSignatureProblem); then
+			echo "Office-Reset: The ${APP_NAME} app bundle is damaged and reporting error ${SIGNATURE_PROBLEM}"
+			if shouldReinstall; then
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged and will be reinstalled"
+				RepairApp replace
+			else
+				echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			fi
 		else
-			echo "Office-Reset: The ${APP_NAME} app bundle is damaged. Reset mode will not reinstall automatically"
+			echo "Office-Reset: Codesign passed successfully"
 		fi
 	else
-		echo "Office-Reset: Codesign passed successfully"
+		echo "Office-Reset: ${APP_NAME} was not found in the default location"
+		if shouldReinstall; then
+			echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
+			RepairApp
+		fi
 	fi
-else
-	echo "Office-Reset: ${APP_NAME} was not found in the default location"
-	if shouldReinstall; then
-		echo "Office-Reset: Reinstall mode enabled, installing ${APP_NAME}"
-		RepairApp
-	fi
-fi
 
-FinishRun
+	FinishRun
+}
+
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi

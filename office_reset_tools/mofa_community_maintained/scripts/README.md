@@ -26,14 +26,25 @@ artifacts. Active scripts use `/bin/zsh --no-rcs` and system macOS tools only.
   - For Word, Excel, PowerPoint, OneNote, and Outlook, a successful reinstall
     exits without removing configuration data. AutoUpdate and OneDrive reset
     their configuration and then reinstall.
+  - Word, Excel, PowerPoint, OneNote, and Outlook honor a custom MAU manifest
+    (`com.microsoft.autoupdate2` `ChannelName=Custom` with `ManifestServer`)
+    only from managed preferences (`/Library/Managed Preferences`, per user or
+    computer) or `/Library/Preferences`. The console user's own preferences
+    are ignored. A `ManifestServer` that is not an `https://` URL is ignored
+    with a message, so no version is pinned and the standard Microsoft
+    package is used.
 - `MOFA_Community_Microsoft_Teams_Removal_Reinstall.zsh` accepts `KEY=value`
   arguments beginning at `$4`; unsupported keys are ignored.
   - `MODE=reinstall` (default; `repair` and `force` are aliases) removes
-    Teams for all users (`CLEAN_ALL_USERS=true`) and reinstalls it.
+    Teams for all users (`CLEAN_ALL_USERS=true`) and reinstalls it. Per-user
+    data is removed only from existing homes under `/Users` (never
+    `/Users/Shared`).
   - `MODE=reset` removes only the console user's Teams data, shared OneAuth
     sign-in data, and retired Teams app bundles. It keeps the installed app
     and does not download anything.
-  - In both modes, custom backgrounds are copied to `~/Teams_Backgrounds_Backup`.
+  - In both modes, custom backgrounds are copied, as the console user, to
+    `~/Teams_Backgrounds_Backup`. A Backgrounds folder that is a symbolic link
+    is not backed up.
 - Office license/sign-in reset, Office factory reset, Office removal, and
   Outlook data removal have no custom Jamf parameters.
 - Repair and reinstall modes download the Microsoft package into a private

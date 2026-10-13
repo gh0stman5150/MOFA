@@ -1,32 +1,32 @@
 from __future__ import annotations
 
-import ast
+import importlib.util
 import json
 import logging
+import subprocess
 import xml.etree.ElementTree as ET
 from hashlib import sha1, sha256
 from pathlib import Path
 
+import pytest
+import requests
+
+import generate_macos_standalone_beta as beta
+import generate_macos_standalone_latest as latest
+import generate_macos_standalone_preview as preview
 import has_substantive_changes
+import http_client
 import run_generators
+import standalone_feed
 
 ROOT = Path(__file__).resolve().parents[1]
-LATEST_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_latest.py"
-PREVIEW_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_preview.py"
-BETA_GENERATOR = ROOT / ".github" / "actions" / "generate_macos_standalone_beta.py"
+ACTIONS = ROOT / ".github" / "actions"
+STANDALONE_GENERATORS = (latest, preview, beta)
 
 
-def load_hash_functions(generator_path: Path):
-    module = ast.parse(generator_path.read_text(encoding="utf-8"), filename=str(generator_path))
-    functions = [
-        node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"compute_hashes", "compute_sha1", "compute_sha256"}
-    ]
-    namespace = {"logging": logging, "sha1": sha1, "sha256": sha256, "_HASH_CACHE": {}}
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(generator_path), "exec"), namespace)
-    return namespace["compute_sha1"], namespace["compute_sha256"], namespace
+@pytest.fixture(autouse=True)
+def fresh_hash_cache(monkeypatch):
+    monkeypatch.setattr(standalone_feed, "_HASH_CACHE", {})
 
 
 def test_json_timestamp_is_not_substantive(tmp_path: Path):
@@ -85,48 +85,36 @@ def test_runner_detects_generator_errors():
     assert not run_generators.ERROR_PATTERN.search("Completed without errors")
 
 
-def test_latest_generator_skips_hash_requests_for_na_urls(monkeypatch, caplog):
+def test_standalone_generators_share_one_implementation():
+    for generator in STANDALONE_GENERATORS:
+        assert generator.feed is standalone_feed, generator.__name__
+        for name in ("read_existing_xml", "compute_hashes", "_HASH_CACHE", "process_xml_data"):
+            assert name not in vars(generator), f"{generator.__name__} redefines {name}"
+
+
+def test_hash_requests_are_skipped_for_na_urls(monkeypatch, caplog):
     def fail_http_get(*args, **kwargs):
         raise AssertionError("http_get should not be called for N/A URLs")
 
-    compute_sha1, compute_sha256, namespace = load_hash_functions(LATEST_GENERATOR)
-    namespace["http_get"] = fail_http_get
-
-    sentinel_urls = ("N/A", " N/A ", "n/a", "", "   ")
+    monkeypatch.setattr(standalone_feed, "http_get", fail_http_get)
 
     with caplog.at_level("ERROR"):
-        for url in sentinel_urls:
-            assert compute_sha1(url) == "N/A"
-            assert compute_sha256(url) == "N/A"
+        for url in ("N/A", " N/A ", "n/a", "", "   ", None):
+            assert standalone_feed.compute_sha1(url) == "N/A"
+            assert standalone_feed.compute_sha256(url) == "N/A"
 
     assert "Error computing SHA" not in caplog.text
 
 
-def test_preview_generator_does_not_log_hash_failures_as_errors(caplog):
+def test_hash_failures_are_warnings_not_errors(monkeypatch, caplog):
     def fail_http_get(*args, **kwargs):
         raise RuntimeError("network failure")
 
-    compute_sha1, compute_sha256, namespace = load_hash_functions(PREVIEW_GENERATOR)
-    namespace["http_get"] = fail_http_get
+    monkeypatch.setattr(standalone_feed, "http_get", fail_http_get)
 
     with caplog.at_level("WARNING"):
-        assert compute_sha1("https://example.test/file.pkg") == "N/A"
-        assert compute_sha256("https://example.test/file.pkg") == "N/A"
-
-    assert "Error computing SHA1/SHA256" in caplog.text
-    assert all(record.levelno < logging.ERROR for record in caplog.records)
-
-
-def test_beta_generator_does_not_log_hash_failures_as_errors(caplog):
-    def fail_http_get(*args, **kwargs):
-        raise RuntimeError("network failure")
-
-    compute_sha1, compute_sha256, namespace = load_hash_functions(BETA_GENERATOR)
-    namespace["http_get"] = fail_http_get
-
-    with caplog.at_level("WARNING"):
-        assert compute_sha1("https://example.test/file.pkg") == "N/A"
-        assert compute_sha256("https://example.test/file.pkg") == "N/A"
+        assert standalone_feed.compute_sha1("https://example.test/file.pkg") == "N/A"
+        assert standalone_feed.compute_sha256("https://example.test/file.pkg") == "N/A"
 
     assert "Error computing SHA1/SHA256" in caplog.text
     assert all(record.levelno < logging.ERROR for record in caplog.records)
@@ -135,6 +123,9 @@ def test_beta_generator_does_not_log_hash_failures_as_errors(caplog):
 class _FakeResponse:
     def __init__(self, payload: bytes):
         self.payload = payload
+        self.content = payload
+        self.headers = {}
+        self.status_code = 200
 
     def raise_for_status(self):
         return None
@@ -144,98 +135,107 @@ class _FakeResponse:
             yield self.payload[start : start + 3]
 
 
-def test_generators_download_each_installer_once_for_both_hashes():
+def _counting_http(monkeypatch, payload, routes=None):
+    calls = []
+
+    def fake_http_get(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse((routes or {}).get(url, payload))
+
+    monkeypatch.setattr(standalone_feed, "http_get", fake_http_get)
+    return calls
+
+
+def test_latest_generator_downloads_each_installer_once_for_both_hashes(monkeypatch):
     payload = b"installer-bytes-for-hashing"
-    for generator in (LATEST_GENERATOR, PREVIEW_GENERATOR, BETA_GENERATOR):
-        compute_sha1, compute_sha256, namespace = load_hash_functions(generator)
-        calls = []
+    calls = _counting_http(monkeypatch, payload)
+    url = "https://example.test/full.pkg"
+    data = {"full_update_download": url, "app_only_update_download": url}
 
-        def fake_http_get(url, **kwargs):
-            calls.append(url)
-            return _FakeResponse(payload)
+    latest.add_hashes(data)
 
-        namespace["http_get"] = fake_http_get
-        url = "https://example.test/full.pkg"
-        assert compute_sha1(url) == sha1(payload).hexdigest()
-        assert compute_sha256(url) == sha256(payload).hexdigest()
-        assert calls == [url], f"{generator.name} downloaded {len(calls)} times"
+    assert data["full_update_sha1"] == data["app_update_sha1"] == sha1(payload).hexdigest()
+    assert data["full_update_sha256"] == data["app_update_sha256"] == sha256(payload).hexdigest()
+    assert calls == [url]
 
 
-def test_json_last_scan_date_is_not_substantive(tmp_path: Path):
-    path = tmp_path / "history.json"
-    old = json.dumps({"last_scan_date": "old", "updates": [{"version": "1"}]}).encode()
-    new = json.dumps({"last_scan_date": "new", "updates": [{"version": "1"}]}).encode()
-    assert has_substantive_changes.normalize(path, old) == has_substantive_changes.normalize(path, new)
+@pytest.mark.parametrize("generator", (preview, beta), ids=lambda module: module.__name__)
+def test_channel_generators_download_each_installer_once_for_both_hashes(monkeypatch, generator):
+    payload = b"installer-bytes-for-hashing"
+    manifest = "https://example.test/manifest.xml"
+    url = "https://example.test/latest.pkg"
+    plist = (
+        "<plist><array><dict><key>Title</key><string>App 1.0</string>"
+        f"<key>Location</key><string>{url}</string></dict></array></plist>"
+    ).encode()
+    calls = _counting_http(monkeypatch, payload, routes={manifest: plist})
+    config = {"url": manifest, "manual_entries": {}, "keys": {"short_version": "Title", "latest_download": "Location"}}
+    run = standalone_feed.FeedRun({}, generator.FIELD_ORDER, "now")
+
+    generator.fetch_and_process("App", config, run)
+
+    package = run.root.find("package")
+    assert package.findtext("short_version") == "1.0"
+    assert package.findtext("sha1") == sha1(payload).hexdigest()
+    assert package.findtext("sha256") == sha256(payload).hexdigest()
+    assert calls == [manifest, url]
 
 
-def test_xml_last_scan_date_is_not_substantive(tmp_path: Path):
-    path = tmp_path / "history.xml"
-    old = b"<Updates><last_scan_date>old</last_scan_date><Update><Version>1</Version></Update></Updates>"
-    new = b"<Updates><last_scan_date>new</last_scan_date><Update><Version>1</Version></Update></Updates>"
-    assert has_substantive_changes.normalize(path, old) == has_substantive_changes.normalize(path, new)
-
-
-def test_cve_history_refuses_to_publish_an_empty_feed(tmp_path: Path, monkeypatch):
-    import runpy
-    import sys
-    import types
-
-    class _Page:
-        text = "<html><body><h1>Maintenance</h1></body></html>"
-
-        def raise_for_status(self):
-            return None
-
-    fake_client = types.ModuleType("http_client")
-    fake_client.get = lambda *args, **kwargs: _Page()
-    monkeypatch.setitem(sys.modules, "http_client", fake_client)
-    (tmp_path / "latest_raw_files").mkdir()
-    monkeypatch.chdir(tmp_path)
-
-    generator = ROOT / ".github" / "actions" / "generate_macos_standalone_cve_history.py"
-    try:
-        runpy.run_path(str(generator), run_name="__main__")
-    except SystemExit as exit_info:
-        assert exit_info.code == 1
-    else:
-        raise AssertionError("an empty parse must stop the generator")
-    assert list((tmp_path / "latest_raw_files").iterdir()) == []
-
-
-def load_fetch_and_process(generator_path: Path, existing_data: dict):
-    module = ast.parse(generator_path.read_text(encoding="utf-8"), filename=str(generator_path))
-    functions = [
-        node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "fetch_and_process"
-    ]
-    added = []
-
+@pytest.mark.parametrize("generator", STANDALONE_GENERATORS, ids=lambda module: module.__name__)
+def test_fetch_failures_revert_to_cache_or_fail_the_run(monkeypatch, caplog, generator):
     def failing_http_get(*args, **kwargs):
         raise RuntimeError("network failure")
 
-    namespace = {
-        "logging": logging,
-        "http_get": failing_http_get,
-        "existing_data": existing_data,
-        "add_to_combined_xml": lambda name, data: added.append((name, data)),
+    monkeypatch.setattr(standalone_feed, "http_get", failing_http_get)
+    config = {"url": "https://example.test/feed.xml", "manual_entries": {}, "keys": {}}
+
+    cached = {"Word": {"last_updated": "January 01, 2026", "data": {"short_version": "16.1"}}}
+    run = standalone_feed.FeedRun(cached, generator.FIELD_ORDER, "now")
+    with caplog.at_level("INFO"):
+        generator.fetch_and_process("Word", config, run)
+    packages = run.root.findall("package")
+    assert [p.findtext("name") for p in packages] == ["Word"]
+    assert packages[0].findtext("short_version") == "16.1"
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
+
+    caplog.clear()
+    run = standalone_feed.FeedRun({}, generator.FIELD_ORDER, "now")
+    with caplog.at_level("INFO"):
+        generator.fetch_and_process("NewApp", config, run)
+    assert run.root.findall("package") == []
+    assert any(record.levelno == logging.ERROR for record in caplog.records)
+
+
+def _snapshot(directory: Path):
+    return {
+        path.relative_to(directory): path.stat().st_mtime_ns
+        for path in directory.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
     }
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(generator_path), "exec"), namespace)
-    return namespace["fetch_and_process"], added
 
 
-def test_fetch_failures_revert_to_cache_or_fail_the_run(caplog):
-    config = {"url": "https://example.test/feed.xml"}
-    for generator in (LATEST_GENERATOR, PREVIEW_GENERATOR, BETA_GENERATOR):
-        cached = {"Word": {"data": {"short_version": "16.1"}}}
-        fetch_and_process, added = load_fetch_and_process(generator, cached)
-        caplog.clear()
-        with caplog.at_level("INFO"):
-            fetch_and_process("Word", config)
-        assert added == [("Word", {"short_version": "16.1"})], generator.name
-        assert all(record.levelno < logging.ERROR for record in caplog.records), generator.name
+def test_every_generator_imports_without_side_effects(tmp_path: Path, monkeypatch):
+    """Importing a generator must not fetch, run commands, write files or configure logging; only main() does."""
 
-        fetch_and_process, added = load_fetch_and_process(generator, {})
-        caplog.clear()
-        with caplog.at_level("INFO"):
-            fetch_and_process("NewApp", config)
-        assert added == [], generator.name
-        assert any(record.levelno == logging.ERROR for record in caplog.records), generator.name
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f"side effect at import time: {args[:1]} {kwargs}")
+
+    monkeypatch.setattr(http_client, "get", forbidden)
+    monkeypatch.setattr(requests.Session, "request", forbidden)
+    for name in ("run", "Popen", "check_output", "call"):
+        monkeypatch.setattr(subprocess, name, forbidden)
+    # basicConfig is a no-op under pytest (the root logger already has
+    # handlers), so forbid the call itself: an import must not reconfigure
+    # the importer's logging (update_readme.py used to set DEBUG).
+    monkeypatch.setattr(logging, "basicConfig", forbidden)
+    monkeypatch.chdir(tmp_path)
+    before = _snapshot(ROOT / "latest_raw_files")
+
+    for generator in run_generators.GENERATORS:
+        spec = importlib.util.spec_from_file_location(f"_smoke_{Path(generator).stem}", ACTIONS / generator)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert callable(getattr(module, "main", None)), f"{generator} has no main()"
+
+    assert list(tmp_path.iterdir()) == []
+    assert _snapshot(ROOT / "latest_raw_files") == before

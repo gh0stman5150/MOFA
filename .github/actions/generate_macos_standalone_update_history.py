@@ -1,3 +1,16 @@
+"""Generate latest_raw_files/macos_standalone_update_history.{xml,json,yaml}.
+
+Scrapes the Office for Mac update history table from Microsoft Learn. The page
+is the only source for the whole feed, so any failure (an HTTP error after
+http_client's retries, a missing table, an empty table or a build error) logs
+ERROR, keeps the existing files untouched and exits 1, which fails
+run_generators.py instead of leaving the feed silently stale.
+
+Run from the repository root: python .github/actions/generate_macos_standalone_update_history.py
+"""
+
+import os
+
 import requests
 from http_client import get as http_get
 from bs4 import BeautifulSoup
@@ -9,14 +22,14 @@ import logging
 import json
 import yaml
 
-# Configure logging with a cleaner and more human-readable format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%B %d, %Y %I:%M %p'
-)
+# URL of the webpage to scrape
+URL = "https://learn.microsoft.com/en-us/officeupdates/update-history-office-for-mac"
+OUTPUT_DIR = "latest_raw_files"
+EXPECTED_HEADERS = ["Release date", "Version", "Install package", "Update packages"]
 
-def scrape_office_mac_updates(url):
+
+def scrape_office_mac_updates(url, output_dir=OUTPUT_DIR):
+    """Scrape url and write the history files; return True when they were written."""
     try:
         logging.info("Starting the scraping process.")
 
@@ -24,7 +37,13 @@ def scrape_office_mac_updates(url):
         response = http_get(url, timeout=30)
         response.raise_for_status()  # Raise an exception for HTTP errors
         logging.info("Successfully fetched the URL.")
+    except requests.exceptions.RequestException as e:
+        # Same policy as the CVE history: an error or maintenance page fails
+        # the run rather than leaving the feed silently stale.
+        logging.error(f"Could not fetch {url}: {e}; keeping the existing update history files.")
+        return False
 
+    try:
         # Parse the HTML content with BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -35,7 +54,7 @@ def scrape_office_mac_updates(url):
         # Iterate through tables to find the one with desired headers
         for table in tables:
             headers = [header.text.strip() for header in table.find_all('th')]
-            if headers == ["Release date", "Version", "Install package", "Update packages"]:
+            if headers == EXPECTED_HEADERS:
                 target_table = table
                 break
 
@@ -43,7 +62,7 @@ def scrape_office_mac_updates(url):
         # failure) rather than leave the feed silently stale.
         if not target_table:
             logging.error("Target table not found on the page; keeping the existing update history files.")
-            return
+            return False
 
         logging.info("Target table found.")
 
@@ -62,7 +81,7 @@ def scrape_office_mac_updates(url):
 
         if not rows:
             logging.error("The update history table had no rows; keeping the existing update history files.")
-            return
+            return False
 
         logging.info("Extracted rows from the target table.")
 
@@ -111,7 +130,7 @@ def scrape_office_mac_updates(url):
         pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="    ")
 
         # Write the pretty XML to a file
-        xml_file = "latest_raw_files/macos_standalone_update_history.xml"
+        xml_file = os.path.join(output_dir, "macos_standalone_update_history.xml")
         with open(xml_file, "w", encoding="utf-8") as f:
             f.write(pretty_xml)
 
@@ -133,24 +152,31 @@ def scrape_office_mac_updates(url):
             data["releases"].append(release_data)
 
         # Write the JSON data to a file
-        json_file = "latest_raw_files/macos_standalone_update_history.json"
+        json_file = os.path.join(output_dir, "macos_standalone_update_history.json")
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
         logging.info(f"Data saved to {json_file}")
 
         # Write the YAML data to a file
-        yaml_file = "latest_raw_files/macos_standalone_update_history.yaml"
+        yaml_file = os.path.join(output_dir, "macos_standalone_update_history.yaml")
         with open(yaml_file, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         logging.info(f"Data saved to {yaml_file}")
+        return True
 
-    except requests.exceptions.RequestException as e:
-        logging.warning(f"Error fetching the URL: {e}")
     except Exception as e:
         logging.error(f"An error occurred while building the update history: {e}")
+        return False
 
-# URL of the webpage to scrape
-url = "https://learn.microsoft.com/en-us/officeupdates/update-history-office-for-mac"
 
-# Call the scraping function
-scrape_office_mac_updates(url)
+def main(url=URL, output_dir=OUTPUT_DIR):
+    return 0 if scrape_office_mac_updates(url, output_dir) else 1
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%B %d, %Y %I:%M %p'
+    )
+    raise SystemExit(main())

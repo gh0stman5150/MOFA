@@ -9,6 +9,11 @@
 # 1.0.0 - Based on the latest available package from *Office-Reset.com*; recreated for MOFA to continue maintenance where *Office-Reset.com* left off.
 # 1.1.0 - MOFA refresh: require a console user with a home under /Users, guard removal targets,
 #         and return nonzero when a removal fails. Removed unused helpers.
+# 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
+#         does); sourcing the file only defines its functions, so tests can exercise them with
+#         stubbed commands. Messages, exit codes and the order of operations are unchanged.
+#
+# Jamf parameters: none. Parameters 4 and later are ignored.
 #
 # WARNING: permanently deletes the console user's local Outlook data store
 # (~/Library/Group Containers/UBF8T346G9.Office/Outlook), including "On My Computer" mail.
@@ -16,14 +21,14 @@
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-echo "Office-Reset: Starting postinstall for Remove_Outlook_Data"
-
-if [[ $EUID -ne 0 ]]; then
-	echo "Office-Reset: This script must be run as root." >&2
-	exit 1
-fi
-
 REMOVAL_FAILURES=0
+
+RequireRoot() {
+	if [[ $EUID -ne 0 ]]; then
+		echo "Office-Reset: This script must be run as root." >&2
+		exit 1
+	fi
+}
 
 FinishRun() {
 	if (( REMOVAL_FAILURES > 0 )); then
@@ -95,21 +100,28 @@ removeFileList() {
 	done
 }
 
-## Main
-LoggedInUser=$(GetLoggedInUser)
-SetHomeFolder "$LoggedInUser"
-if [[ -z "$LoggedInUser" ]]; then
-	echo "Office-Reset: No eligible console user with a home under /Users; skipping Outlook data removal"
-	exit 0
-fi
-echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
+main() { # Jamf passes $1-$3; this script has no custom parameters
+	echo "Office-Reset: Starting postinstall for Remove_Outlook_Data"
+	RequireRoot
 
-/usr/bin/pkill -9 'Microsoft Outlook'
+	LoggedInUser=$(GetLoggedInUser)
+	SetHomeFolder "$LoggedInUser"
+	if [[ -z "$LoggedInUser" ]]; then
+		echo "Office-Reset: No eligible console user with a home under /Users; skipping Outlook data removal"
+		exit 0
+	fi
+	echo "Office-Reset: Running as: $LoggedInUser; Home Folder: $HOME"
 
-removeFileList \
-	"$HOME/Library/Preferences/com.microsoft.Outlook.plist" \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office/OutlookProfile.plist"
+	/usr/bin/pkill -9 'Microsoft Outlook'
 
-removePathList "$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook"
+	removeFileList \
+		"$HOME/Library/Preferences/com.microsoft.Outlook.plist" \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office/OutlookProfile.plist"
 
-FinishRun
+	removePathList "$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook"
+
+	FinishRun
+}
+
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi

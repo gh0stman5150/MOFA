@@ -1,72 +1,106 @@
+"""Generate the root README.md from the feeds in latest_raw_files/.
+
+Every download link in the standalone tables is rendered from the same feed
+entry as the version and SHA256 shown beside it. A feed that is missing,
+unparseable or lacks an entry the README renders (the OneDrive Production
+Ring, the Edge current channel) is logged at ERROR and the script exits 1
+without touching README.md.
+"""
+
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from pathlib import Path
 import pytz
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+MISSING = "N/A"
+
+STANDALONE_FIELDS = (
+    "application_id",
+    "application_name",
+    "short_version",
+    "full_version",
+    "last_updated",
+    "full_update_sha1",
+    "app_only_update_download",
+    "app_update_sha256",
+    "app_update_sha1",
+    "full_update_download",
+    "full_update_sha256",
+    "min_os",
+)
+
+
+class FeedError(Exception):
+    """A feed the README depends on is missing, unparseable or incomplete."""
+
+
+def _text(element, tag, default=MISSING):
+    """Return the stripped text of a child element, or default when absent or empty."""
+    child = element.find(tag)
+    if child is None or child.text is None or not child.text.strip():
+        return default
+    return child.text.strip()
+
+
+def _parse_feed(file_path, label):
+    try:
+        return ET.parse(file_path).getroot()
+    except (OSError, ET.ParseError) as e:
+        raise FeedError(f"Cannot parse the {label} feed {file_path}: {e}") from e
+
+
+def _package_name(package, file_path):
+    name = _text(package, "name", default="")
+    if not name:
+        raise FeedError(f"A package in {file_path} has no name")
+    return name
+
 
 def parse_latest_xml(file_path):
     logging.info(f"Parsing XML file: {file_path}")
-
-    # Parse the XML file
-    tree = ET.parse(file_path)
-    root = tree.getroot()
+    root = _parse_feed(file_path, "standalone")
     logging.debug("XML file parsed successfully")
 
     # Extract global last_updated
-    global_last_updated = root.find("last_updated").text.strip()
+    global_last_updated = _text(root, "last_updated")
     logging.info(f"XML last_updated: {global_last_updated}")
 
-    # Extract package details
+    # Extract package details, stored by lowercase name for easy access
     packages = {}
     for package in root.findall("package"):
-        name = package.find("name").text.strip().lower()  # Store by lowercase name for easy access
-        packages[name] = {
-            "name": name,
-            "application_id": package.find("application_id").text.strip(),
-            "application_name": package.find("application_name").text.strip(),
-            "short_version": package.find("short_version").text.strip(),
-            "full_version": package.find("full_version").text.strip(),
-            "last_updated": package.find("last_updated").text.strip(),
-            "full_update_sha1": package.find("full_update_sha1").text.strip(),
-            "app_only_update_download": package.find("app_only_update_download").text.strip(),
-            "app_update_sha256": package.find("app_update_sha256").text.strip(),
-            "app_update_sha1": package.find("app_update_sha1").text.strip(),
-            "full_update_download": package.find("full_update_download").text.strip(),
-            "full_update_sha256": package.find("full_update_sha256").text.strip(),
-            "full_update_sha1": package.find("full_update_sha1").text.strip(),
-            "min_os": package.find("min_os").text.strip() if package.find("min_os") is not None else "N/A",
-        }
+        name = _package_name(package, file_path).lower()
+        packages[name] = {"name": name}
+        for field in STANDALONE_FIELDS:
+            packages[name][field] = _text(package, field)
         # logging.debug(f"Extracted package: {packages[name]}") # Uncomment to see all package details
 
+    if not packages:
+        raise FeedError(f"The standalone feed {file_path} has no packages")
     return global_last_updated, packages
 
 def parse_appstore_xml(file_path):
     logging.info(f"Parsing AppStore XML file: {file_path}")
-
-    # Parse the XML file
-    tree = ET.parse(file_path)
-    root = tree.getroot()
+    root = _parse_feed(file_path, "App Store")
     logging.debug("AppStore XML file parsed successfully")
 
     # Extract global last_updated
-    global_last_updated = root.find("last_updated").text.strip()
+    global_last_updated = _text(root, "last_updated")
     logging.info(f"AppStore XML last_updated: {global_last_updated}")
 
-    # Extract package details
+    # Extract package details, stored by lowercase name for easy access
     packages = {}
     for package in root.findall("package"):
-        name = package.find("name").text.strip().lower()  # Store by lowercase name for easy access
+        name = _package_name(package, file_path).lower()
         packages[name] = {
             "name": name,
-            "application_name": package.find("application_name").text.strip(),
-            "bundleid": package.find("bundleId").text.strip(),
-            "currentVersionReleaseDate": package.find("currentVersionReleaseDate").text.strip(),
-            "icon_image": package.find("icon_image").text.strip(),
-            "minimumOsVersion": package.find("minimumOsVersion").text.strip(),
-            "releaseNotes": package.find("releaseNotes").text.strip(),
-            "version": package.find("version").text.strip(),
+            "application_name": _text(package, "application_name"),
+            "bundleid": _text(package, "bundleId"),
+            "currentVersionReleaseDate": _text(package, "currentVersionReleaseDate"),
+            "icon_image": _text(package, "icon_image"),
+            "minimumOsVersion": _text(package, "minimumOsVersion"),
+            "releaseNotes": _text(package, "releaseNotes"),
+            "version": _text(package, "version"),
         }
         # logging.debug(f"Extracted AppStore package: {packages[name]}") # Uncomment to see all package details
 
@@ -74,117 +108,88 @@ def parse_appstore_xml(file_path):
 
 def parse_onedrive_xml(file_path):
     logging.info(f"Parsing OneDrive XML file: {file_path}")
+    root = _parse_feed(file_path, "OneDrive")
+    logging.debug("OneDrive XML file parsed successfully")
 
-    try:
-        # Parse the XML file
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        logging.debug("OneDrive XML file parsed successfully")
+    # Extract package details for all rings
+    onedrive_data = {}
+    for package in root.findall("package"):
+        name = _package_name(package, file_path)
+        ring_name = name.lower().replace(" ", "_")  # Convert name to a suitable key format
 
-        # Extract package details for all rings
-        onedrive_data = {}
-        for package in root.findall("package"):
-            name = package.find("name").text.strip()
-            ring_name = name.lower().replace(" ", "_")  # Convert name to a suitable key format
-            
-            onedrive_data[ring_name] = {
-                "name": name,
-                "short_version": package.find("short_version").text.strip(),
-                "application_id": package.find("application_id").text.strip(),
-                "application_name": package.find("application_name").text.strip(),
-                "cfbundle_id": package.find("CFBundleVersion").text.strip(),
-                "full_update_download": package.find("full_update_download").text.strip(),
-                "full_update_sha1": package.find("full_update_sha1").text.strip(),
-                "full_update_sha256": package.find("full_update_sha256").text.strip(),
-                "last_updated": package.find("last_updated").text.strip(),
-                # Adding minimal OS requirement though it may not exist in this XML
-                "min_os": "NA", # Default value if not available
-            }
-        
-        # Also keep the production ring at the top level for backward compatibility
-        if "production_ring" in onedrive_data:
-            for key, value in onedrive_data["production_ring"].items():
-                onedrive_data[key] = value
-        
-        logging.info(f"OneDrive data extracted: {len(onedrive_data)} packages found")
-        return onedrive_data
-
-    except Exception as e:
-        logging.warning(f"Error parsing OneDrive XML: {e}")
-        return {
-            "name": "OneDrive",
-            "short_version": "Unknown",
-            "application_name": "OneDrive.app",
-            "cfbundle_id": "com.microsoft.onedrive",
-            "last_updated": "Unknown",
-            "min_os": "Unknown",
-            "full_update_download": "https://go.microsoft.com/fwlink/?linkid=823060",
-            "full_update_sha1": "Unknown",
-            "full_update_sha256": "Unknown"
+        onedrive_data[ring_name] = {
+            "name": name,
+            "short_version": _text(package, "short_version"),
+            "application_id": _text(package, "application_id"),
+            "application_name": _text(package, "application_name"),
+            "cfbundle_id": _text(package, "CFBundleVersion"),
+            "full_update_download": _text(package, "full_update_download"),
+            "full_update_sha1": _text(package, "full_update_sha1"),
+            "full_update_sha256": _text(package, "full_update_sha256"),
+            "last_updated": _text(package, "last_updated"),
+            # Adding minimal OS requirement though it may not exist in this XML
+            "min_os": "NA", # Default value if not available
         }
+
+    # The README renders the Production Ring; without it the feed is unusable.
+    if "production_ring" not in onedrive_data:
+        raise FeedError(f"The OneDrive feed {file_path} has no Production Ring entry")
+
+    # Also keep the production ring at the top level for backward compatibility
+    for key, value in onedrive_data["production_ring"].items():
+        onedrive_data[key] = value
+
+    logging.info(f"OneDrive data extracted: {len(onedrive_data)} packages found")
+    return onedrive_data
 
 def parse_edge_xml(file_path):
     """
     Parse the Edge XML file and extract details for the 'current' version.
     """
     logging.info(f"Parsing Edge XML file: {file_path}")
+    root = _parse_feed(file_path, "Edge")
+    logging.debug("Edge XML file parsed successfully")
 
-    try:
-        # Parse the XML file
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        logging.debug("Edge XML file parsed successfully")
-
-        # Extract the 'current' version details
-        current_version = None
-        for version in root.findall("Version"):
-            if version.find("Name").text.strip().lower() == "current":
-                current_version = {
-                    "name": "Microsoft Edge",
-                    "short_version": version.find("Version").text.strip(),
-                    "application_id": version.find("Application_ID").text.strip(),
-                    "application_name": version.find("Application_Name").text.strip(),
-                    "cfbundle_id": version.find("CFBundleVersion").text.strip(),
-                    "full_update_download": version.find("Full_Update_Download").text.strip(),
-                    "full_update_sha1": version.find("Full_Update_Sha1").text.strip(),
-                    "full_update_sha256": version.find("Full_Update_Sha256").text.strip(),
-                    "last_updated": version.find("Last_Update").text.strip(),
-                }
-                break
-
-        if current_version:
+    # Extract the 'current' version details
+    for version in root.findall("Version"):
+        if _text(version, "Name", default="").lower() == "current":
             logging.info("Edge 'current' version details extracted successfully")
-            return current_version
-        else:
-            logging.warning("No 'current' version found in Edge XML")
-            return None
+            return {
+                "name": "Microsoft Edge",
+                "short_version": _text(version, "Version"),
+                "application_id": _text(version, "Application_ID"),
+                "application_name": _text(version, "Application_Name"),
+                "cfbundle_id": _text(version, "CFBundleVersion"),
+                "full_update_download": _text(version, "Full_Update_Download"),
+                "full_update_sha1": _text(version, "Full_Update_Sha1"),
+                "full_update_sha256": _text(version, "Full_Update_Sha256"),
+                "last_updated": _text(version, "Last_Update"),
+            }
 
-    except Exception as e:
-        logging.warning(f"Error parsing Edge XML: {e}")
-        return None
+    raise FeedError(f"The Edge feed {file_path} has no 'current' channel entry")
 
 def get_onedrive_package_detail(onedrive_data, ring_name, detail):
     """
     Get a specific detail from a specific OneDrive package/ring.
-    
+
     Args:
         onedrive_data (dict): The OneDrive data structure containing all packages
         ring_name (str): The name of the ring (e.g. "production_ring", "insider_ring")
         detail (str): The detail to retrieve (e.g. "short_version", "full_update_download")
-    
+
     Returns:
-        str: The requested detail value or None if not found
+        str: The requested detail value or "N/A" if not found
     """
     ring_key = ring_name.lower().replace(" ", "_")
     detail = detail.lower()
-    
+
     if ring_key in onedrive_data and detail in onedrive_data[ring_key]:
         return onedrive_data[ring_key][detail]
     else:
         # Fall back to top-level details for backward compatibility
         if detail in onedrive_data:
             return onedrive_data[detail]
-        return None
+        return MISSING
 
 def generate_ios_table(ios_packages):
     logging.info("Generating iOS AppStore table content")
@@ -230,7 +235,7 @@ def generate_macos_table(macos_packages):
     logging.info("macOS AppStore table content generated successfully")
     return table_content
 
-def generate_readme_content(global_last_updated, packages, ios_packages, macos_packages):
+def generate_readme_content(global_last_updated, packages, ios_packages, macos_packages, ios_last_updated, macos_last_updated):
     logging.info("Generating README content")
 
     # Set timezone to US/Eastern (EST/EDT)
@@ -281,38 +286,38 @@ We welcome community contributions—fork the repository, ask questions, or shar
 ## <img src=".github/images/Microsoft_Logo_512px.png" alt="Download Image" width="20"></a> Microsoft Standalone Packages
 
 <sup>All links below direct to Microsoft's official Content Delivery Network (CDN).</sup>
-<sup>The links provided will always download the latest version offered by Microsoft. However, the version information listed below reflects the version available at the time of this update.</sup>
+<sup>Each link is the download whose version and SHA256 are listed beside it. Links through go.microsoft.com always serve Microsoft's latest version, so they can be newer than the version and SHA256 recorded at the time of this update.</sup>
 
 <sup>_Last Updated: <code style="color : mediumseagreen">{global_last_updated}</code> [**_Raw XML_**](latest_raw_files/macos_standalone_latest.xml) [**_Raw YAML_**](latest_raw_files/macos_standalone_latest.yaml) [**_Raw JSON_**](latest_raw_files/macos_standalone_latest.json) (Automatically Updated every 1 hour)_</sup>
 
 | **Product Package** | **Bundle Information** | **Download** |
 |----------------------|----------------------|--------------|
-| **Microsoft** <sup>365/2021/2024</sup> **Office Suite Installer**<br><a href="https://learn.microsoft.com/en-us/officeupdates/release-notes-office-for-mac" style="text-decoration: none;"><small>_Release Notes_</small></a><br><sub>_(Includes Word, Excel, PowerPoint, Outlook, OneNote, OneDrive, Defender Shim, and MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.office` | <a href="https://go.microsoft.com/fwlink/?linkid=525133"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> |
-| **Microsoft** <sup>365/2021/2024</sup> **BusinessPro Suite Installer**<br><sub>_(Includes Word, Excel, PowerPoint, Outlook, OneNote, OneDrive, Teams, Defender Shim, and MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.office` | <a href="https://go.microsoft.com/fwlink/?linkid=2009112"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> |
-| **Word** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Word', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Word', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Word', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.word` | <a href="https://go.microsoft.com/fwlink/?linkid=525134"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> |
+| **Microsoft** <sup>365/2021/2024</sup> **Office Suite Installer**<br><a href="https://learn.microsoft.com/en-us/officeupdates/release-notes-office-for-mac" style="text-decoration: none;"><small>_Release Notes_</small></a><br><sub>_(Includes Word, Excel, PowerPoint, Outlook, OneNote, OneDrive, Defender Shim, and MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.office` | <a href="{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'full_update_download')}"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> |
+| **Microsoft** <sup>365/2021/2024</sup> **BusinessPro Suite Installer**<br><sub>_(Includes Word, Excel, PowerPoint, Outlook, OneNote, OneDrive, Teams, Defender Shim, and MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.office` | <a href="{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'full_update_download')}"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> |
+| **Word** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Word', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Word', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Word', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.word` | <a href="{get_standalone_package_detail(packages, 'Word', 'full_update_download')}"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> |
 | **Word** <sup>365/2021/2024</sup> **App Only Installer** <br><sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Word', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Word', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Word', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.word` | <a href="{get_standalone_package_detail(packages, 'Word', 'app_only_update_download')}"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> |
-| **Excel** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Excel', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Excel', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Excel', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.excel` | <a href="https://go.microsoft.com/fwlink/?linkid=525135"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> |
+| **Excel** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Excel', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Excel', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Excel', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.excel` | <a href="{get_standalone_package_detail(packages, 'Excel', 'full_update_download')}"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> |
 | **Excel** <sup>365/2021/2024</sup> **App Only Installer** <br><sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Excel', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Excel', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Excel', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.excel` | <a href="{get_standalone_package_detail(packages, 'Excel', 'app_only_update_download')}"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> |
-| **PowerPoint** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'PowerPoint', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.powerpoint` | <a href="https://go.microsoft.com/fwlink/?linkid=525136"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> |
+| **PowerPoint** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'PowerPoint', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.powerpoint` | <a href="{get_standalone_package_detail(packages, 'PowerPoint', 'full_update_download')}"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> |
 | **PowerPoint** <sup>365/2021/2024</sup> **App Only Installer** <br><sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'PowerPoint', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'PowerPoint', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.powerpoint` | <a href="{get_standalone_package_detail(packages, 'PowerPoint', 'app_only_update_download')}"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> |
-| **Outlook** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Outlook', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.outlook` | <a href="https://go.microsoft.com/fwlink/?linkid=525137"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a>|
+| **Outlook** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Outlook', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.outlook` | <a href="{get_standalone_package_detail(packages, 'Outlook', 'full_update_download')}"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a>|
 | **Outlook** <sup>365/2021/2024</sup> **App Only Installer** <br><sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Outlook', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Outlook', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.outlook` | <a href="{get_standalone_package_detail(packages, 'Outlook', 'app_only_update_download')}"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a>|
-| **OneNote** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'OneNote', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.onenote.mac` | <a href="https://go.microsoft.com/fwlink/?linkid=820886"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> |
+| **OneNote** <sup>365/2021/2024</sup> **Standalone Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'OneNote', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.onenote.mac` | <a href="{get_standalone_package_detail(packages, 'OneNote', 'full_update_download')}"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> |
 | **OneNote** <sup>365/2021/2024</sup> **App Only Installer** <br><sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'OneNote', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'OneNote', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.onenote.mac` | <a href="{get_standalone_package_detail(packages, 'OneNote', 'app_only_update_download')}"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> |
-| **OneDrive Standalone Installer** <sup>(Production Ring)</sup> <br><a href="https://support.microsoft.com/en-us/office/onedrive-release-notes-845dcf18-f921-435e-bf28-4e24b95e5fc0#OSVersion=Mac" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'last_updated')}`_<br> | **Version:**<br>`{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'short_version')}`<br><br>**Min OS:**<br>`NA`<br><br>**CFBundle ID:**<br>`com.microsoft.OneDrive` | <a href="https://go.microsoft.com/fwlink/?linkid=823060"><img src=".github/images/OneDrive.png" alt="Download Image" width="80"></a> |
+| **OneDrive Standalone Installer** <sup>(Production Ring)</sup> <br><a href="https://support.microsoft.com/en-us/office/onedrive-release-notes-845dcf18-f921-435e-bf28-4e24b95e5fc0#OSVersion=Mac" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'last_updated')}`_<br> | **Version:**<br>`{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'short_version')}`<br><br>**Min OS:**<br>`NA`<br><br>**CFBundle ID:**<br>`com.microsoft.OneDrive` | <a href="{get_onedrive_package_detail(packages['onedrive'], 'Production Ring', 'full_update_download')}"><img src=".github/images/OneDrive.png" alt="Download Image" width="80"></a> |
 | **Skype for Business Standalone Installer**<br><a href="https://support.microsoft.com/en-us/office/follow-the-latest-updates-in-skype-for-business-cece9f93-add1-4d93-9a38-56cc598e5781?ui=en-us&rs=en-us&ad=us" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Skype', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Skype', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Skype', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.SkypeForBusiness` | <a href="{get_standalone_package_detail(packages, 'Skype', 'app_only_update_download')}"><img src=".github/images/skype_for_business.png" alt="Download Image" width="80"></a> |
-| **Teams Standalone Installer**<br><a href="https://support.microsoft.com/en-us/office/what-s-new-in-microsoft-teams-d7092a6d-c896-424c-b362-a472d5f105de" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Teams', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Teams', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Teams', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.teams2` | <a href="https://go.microsoft.com/fwlink/?linkid=2249065"><img src=".github/images/Teams.png" alt="Download Image" width="80"></a> |
-| **InTune Company Portal Standalone Installer**<br><a href="https://aka.ms/intuneupdates" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Intune', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Intune', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Intune', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.CompanyPortalMac` | <a href="https://go.microsoft.com/fwlink/?linkid=853070"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> |
+| **Teams Standalone Installer**<br><a href="https://support.microsoft.com/en-us/office/what-s-new-in-microsoft-teams-d7092a6d-c896-424c-b362-a472d5f105de" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Teams', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Teams', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Teams', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.teams2` | <a href="{get_standalone_package_detail(packages, 'Teams', 'full_update_download')}"><img src=".github/images/Teams.png" alt="Download Image" width="80"></a> |
+| **InTune Company Portal Standalone Installer**<br><a href="https://aka.ms/intuneupdates" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Intune', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Intune', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Intune', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.CompanyPortalMac` | <a href="{get_standalone_package_detail(packages, 'Intune', 'full_update_download')}"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> |
 | **InTune Company Portal App Only Installer**<br><a href="https://aka.ms/intuneupdates" style="text-decoration: none;"><small>_Release Notes_</small></a> <sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Intune', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Intune', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Intune', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.CompanyPortalMac` | <a href="{get_standalone_package_detail(packages, 'Intune', 'app_only_update_download')}"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> |
-| **Edge** <sup>_(Current Channel)_</sup><br><a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Edge', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Edge', 'short_version')}`<br><br>**Min OS:**<br>`11.0`<br><br>**CFBundle ID:**<br>`com.microsoft.edgemac` | <a href="https://go.microsoft.com/fwlink/?linkid=2093504"><img src=".github/images/edge_app.png" alt="Download Image" width="80"></a>|
-| **Defender for Endpoint Installer**<br><a href="https://learn.microsoft.com/microsoft-365/security/defender-endpoint/mac-whatsnew" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Defender For Endpoint', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Defender For Endpoint', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Defender For Endpoint', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.wdav` | <a href="https://go.microsoft.com/fwlink/?linkid=2097502"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> |
-| **Defender for Consumers Installer**<br><a href="https://learn.microsoft.com/microsoft-365/security/defender-endpoint/mac-whatsnew" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Defender For Consumers', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Defender For Consumers', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Defender For Consumers', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.wdav` | <a href="https://go.microsoft.com/fwlink/?linkid=2247001"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> |
+| **Edge** <sup>_(Current Channel)_</sup><br><a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Edge', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Edge', 'short_version')}`<br><br>**Min OS:**<br>`11.0`<br><br>**CFBundle ID:**<br>`com.microsoft.edgemac` | <a href="{get_standalone_package_detail(packages, 'Edge', 'full_update_download')}"><img src=".github/images/edge_app.png" alt="Download Image" width="80"></a>|
+| **Defender for Endpoint Installer**<br><a href="https://learn.microsoft.com/microsoft-365/security/defender-endpoint/mac-whatsnew" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Defender For Endpoint', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Defender For Endpoint', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Defender For Endpoint', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.wdav` | <a href="{get_standalone_package_detail(packages, 'Defender For Endpoint', 'full_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> |
+| **Defender for Consumers Installer**<br><a href="https://learn.microsoft.com/microsoft-365/security/defender-endpoint/mac-whatsnew" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Defender For Consumers', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Defender For Consumers', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Defender For Consumers', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.wdav` | <a href="{get_standalone_package_detail(packages, 'Defender For Consumers', 'full_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> |
 | **Defender SHIM Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Defender Shim', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Defender Shim', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Defender Shim', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.wdav.shim` | <a href="{get_standalone_package_detail(packages, 'Defender Shim', 'app_only_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> |
-| **Windows App Standalone Installer** <sup>_(Remote Desktop <img src=".github/images/microsoft-remote-desktop-logo.png" alt="Remote Desktop" width="15" style="vertical-align: middle; display: inline-block;" />)_</sup><br><a href="https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=macos" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Windows App', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.rdc.macos` | <a href="https://go.microsoft.com/fwlink/?linkid=868963"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> |
+| **Windows App Standalone Installer** <sup>_(Remote Desktop <img src=".github/images/microsoft-remote-desktop-logo.png" alt="Remote Desktop" width="15" style="vertical-align: middle; display: inline-block;" />)_</sup><br><a href="https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=macos" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Windows App', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.rdc.macos` | <a href="{get_standalone_package_detail(packages, 'Windows App', 'full_update_download')}"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> |
 | **Windows App Only Installer** <sup>_(Remote Desktop <img src=".github/images/microsoft-remote-desktop-logo.png" alt="Remote Desktop" width="15" style="vertical-align: middle; display: inline-block;" />)_</sup><br><a href="https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=macos" style="text-decoration: none;"><small>_Release Notes_</small></a> <sub>_(Does Not Contain MAU)_</sub><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Windows App', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Windows App', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.rdc.macos` | <a href="{get_standalone_package_detail(packages, 'Windows App', 'app_only_update_download')}"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> |
-| **Visual Studio Code Standalone Installer**<br><a href="https://code.visualstudio.com/updates/" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Visual', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Visual', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Visual', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.VSCode` | <a href="https://code.visualstudio.com/sha/download?build=stable&os=darwin-universal-dmg"><img src=".github/images/Code_512x512x32.png" alt="Download Image" width="80"></a>|
-| **Microsoft Copilot**<br><a href="https://learn.microsoft.com/en-us/copilot/microsoft-365/release-notes?tabs=all" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Copilot', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Copilot', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Copilot', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.m365copilot` | <a href="https://go.microsoft.com/fwlink/?linkid=2325438"><img src=".github/images/Copilot.png" alt="Download Image" width="80"></a>|
-| **AutoUpdate Standalone Installer**<br><a href="https://learn.microsoft.com/en-us/officeupdates/release-history-microsoft-autoupdate" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'MAU', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'MAU', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'MAU', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.autoupdate` | <a href="https://go.microsoft.com/fwlink/?linkid=830196"><img src=".github/images/autoupdate.png" alt="Download Image" width="80"></a>|
+| **Visual Studio Code Standalone Installer**<br><a href="https://code.visualstudio.com/updates/" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Visual', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Visual', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Visual', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.VSCode` | <a href="{get_standalone_package_detail(packages, 'Visual', 'full_update_download')}"><img src=".github/images/Code_512x512x32.png" alt="Download Image" width="80"></a>|
+| **Microsoft Copilot**<br><a href="https://learn.microsoft.com/en-us/copilot/microsoft-365/release-notes?tabs=all" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Copilot', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Copilot', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Copilot', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.m365copilot` | <a href="{get_standalone_package_detail(packages, 'Copilot', 'full_update_download')}"><img src=".github/images/Copilot.png" alt="Download Image" width="80"></a>|
+| **AutoUpdate Standalone Installer**<br><a href="https://learn.microsoft.com/en-us/officeupdates/release-history-microsoft-autoupdate" style="text-decoration: none;"><small>_Release Notes_</small></a><br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'MAU', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'MAU', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'MAU', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.autoupdate` | <a href="{get_standalone_package_detail(packages, 'MAU', 'full_update_download')}"><img src=".github/images/autoupdate.png" alt="Download Image" width="80"></a>|
 | **Licensing Helper Tool Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.licensinghelper` | <a href="{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'full_update_download')}"><img src=".github/images/pkg-icon.png" alt="Download Image" width="80"></a>|
 | **Quick Assist Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Quick Assist', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Quick Assist', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Quick Assist', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.quickassist` | <a href="{get_standalone_package_detail(packages, 'Quick Assist', 'full_update_download')}"><img src=".github/images/quickassist.png" alt="Download Image" width="80"></a>|
 | **Remote Help Installer**<br><br>_**Last Update:** `{get_standalone_package_detail(packages, 'Remote Help', 'last_updated')}`_<br> | **Version:**<br>`{get_standalone_package_detail(packages, 'Remote Help', 'short_version')}`<br><br>**Min OS:**<br>`{get_standalone_package_detail(packages, 'Remote Help', 'min_os')}`<br><br>**CFBundle ID:**<br>`com.microsoft.remotehelp` | <a href="{get_standalone_package_detail(packages, 'Remote Help', 'full_update_download')}"><img src=".github/images/remotehelp.png" alt="Download Image" width="80"></a>|
@@ -321,32 +326,32 @@ We welcome community contributions—fork the repository, ask questions, or shar
 
 | **Product Package** | **Download** | **SHA256** |
 |----------------------|-----------------|------------|
-| **Microsoft Office Suite** | <a href="https://go.microsoft.com/fwlink/?linkid=525133"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'full_update_sha256')}` |
-| **Microsoft BusinessPro Suite** | <a href="https://go.microsoft.com/fwlink/?linkid=2009112"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'full_update_sha256')}` |
-| **Word Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=525134"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Word', 'full_update_sha256')}` |
+| **Microsoft Office Suite** | <a href="{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'full_update_download')}"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Microsoft Office Suite', 'full_update_sha256')}` |
+| **Microsoft BusinessPro Suite** | <a href="{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'full_update_download')}"><img src=".github/images/suite.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Microsoft BusinessPro Suite', 'full_update_sha256')}` |
+| **Word Standalone** | <a href="{get_standalone_package_detail(packages, 'Word', 'full_update_download')}"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Word', 'full_update_sha256')}` |
 | **Word App Only** | <a href="{get_standalone_package_detail(packages, 'Word', 'app_only_update_download')}"><img src=".github/images/Word.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Word', 'app_update_sha256')}` |
-| **Excel Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=525135"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Excel', 'full_update_sha256')}` |
+| **Excel Standalone** | <a href="{get_standalone_package_detail(packages, 'Excel', 'full_update_download')}"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Excel', 'full_update_sha256')}` |
 | **Excel App Only** | <a href="{get_standalone_package_detail(packages, 'Excel', 'app_only_update_download')}"><img src=".github/images/Excel.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Excel', 'app_update_sha256')}` |
-| **PowerPoint Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=525136"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'PowerPoint', 'full_update_sha256')}` |
+| **PowerPoint Standalone** | <a href="{get_standalone_package_detail(packages, 'PowerPoint', 'full_update_download')}"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'PowerPoint', 'full_update_sha256')}` |
 | **PowerPoint App Only** | <a href="{get_standalone_package_detail(packages, 'PowerPoint', 'app_only_update_download')}"><img src=".github/images/PowerPoint.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'PowerPoint', 'app_update_sha256')}` |
-| **Outlook Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=525137"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Outlook', 'full_update_sha256')}` |
+| **Outlook Standalone** | <a href="{get_standalone_package_detail(packages, 'Outlook', 'full_update_download')}"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Outlook', 'full_update_sha256')}` |
 | **Outlook App Only** | <a href="{get_standalone_package_detail(packages, 'Outlook', 'app_only_update_download')}"><img src=".github/images/Outlook.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Outlook', 'app_update_sha256')}` |
-| **OneNote Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=820886"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'OneNote', 'full_update_sha256')}` |
+| **OneNote Standalone** | <a href="{get_standalone_package_detail(packages, 'OneNote', 'full_update_download')}"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'OneNote', 'full_update_sha256')}` |
 | **OneNote App Only** | <a href="{get_standalone_package_detail(packages, 'OneNote', 'app_only_update_download')}"><img src=".github/images/OneNote.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'OneNote', 'app_update_sha256')}` |
-| **OneDrive** | <a href="https://go.microsoft.com/fwlink/?linkid=823060"><img src=".github/images/OneDrive.png" alt="Download Image" width="80"></a> | `{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'full_update_sha256')}` |
-| **Skype for Business** | <a href="{get_standalone_package_detail(packages, 'Skype', 'app_only_update_download')}"><img src=".github/images/skype_for_business.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Skype', 'full_update_sha256')}` |
-| **Teams** | <a href="https://go.microsoft.com/fwlink/?linkid=2249065"><img src=".github/images/Teams.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Teams', 'full_update_sha256')}` |
-| **Intune Company Portal Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=853070"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Intune', 'full_update_sha256')}` |
+| **OneDrive** | <a href="{get_onedrive_package_detail(packages['onedrive'], 'Production Ring', 'full_update_download')}"><img src=".github/images/OneDrive.png" alt="Download Image" width="80"></a> | `{get_onedrive_package_detail(packages["onedrive"], "Production Ring", 'full_update_sha256')}` |
+| **Skype for Business** | <a href="{get_standalone_package_detail(packages, 'Skype', 'app_only_update_download')}"><img src=".github/images/skype_for_business.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Skype', 'app_update_sha256')}` |
+| **Teams** | <a href="{get_standalone_package_detail(packages, 'Teams', 'full_update_download')}"><img src=".github/images/Teams.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Teams', 'full_update_sha256')}` |
+| **Intune Company Portal Standalone** | <a href="{get_standalone_package_detail(packages, 'Intune', 'full_update_download')}"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Intune', 'full_update_sha256')}` |
 | **Intune Company Portal App Only** | <a href="{get_standalone_package_detail(packages, 'Intune', 'app_only_update_download')}"><img src=".github/images/companyportal.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Intune', 'app_update_sha256')}` |
-| **Edge** | <a href="https://go.microsoft.com/fwlink/?linkid=2093504"><img src=".github/images/edge_app.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Edge', 'full_update_sha256')}` |
-| **Defender for Endpoint** | <a href="https://go.microsoft.com/fwlink/?linkid=2097502"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender For Endpoint', 'full_update_sha256')}` |
-| **Defender for Consumers** | <a href="https://go.microsoft.com/fwlink/?linkid=2247001"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender For Consumers', 'full_update_sha256')}` |
-| **Defender SHIM** | <a href="{get_standalone_package_detail(packages, 'Defender Shim', 'app_only_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender Shim', 'full_update_sha256')}` |
-| **Windows App Standalone** | <a href="https://go.microsoft.com/fwlink/?linkid=868963"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Windows App', 'full_update_sha256')}` |
+| **Edge** | <a href="{get_standalone_package_detail(packages, 'Edge', 'full_update_download')}"><img src=".github/images/edge_app.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Edge', 'full_update_sha256')}` |
+| **Defender for Endpoint** | <a href="{get_standalone_package_detail(packages, 'Defender For Endpoint', 'full_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender For Endpoint', 'full_update_sha256')}` |
+| **Defender for Consumers** | <a href="{get_standalone_package_detail(packages, 'Defender For Consumers', 'full_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender For Consumers', 'full_update_sha256')}` |
+| **Defender SHIM** | <a href="{get_standalone_package_detail(packages, 'Defender Shim', 'app_only_update_download')}"><img src=".github/images/defender.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Defender Shim', 'app_update_sha256')}` |
+| **Windows App Standalone** | <a href="{get_standalone_package_detail(packages, 'Windows App', 'full_update_download')}"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Windows App', 'full_update_sha256')}` |
 | **Windows App Only** | <a href="{get_standalone_package_detail(packages, 'Windows App', 'app_only_update_download')}"><img src=".github/images/windowsapp.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Windows App', 'app_update_sha256')}` |
-| **Visual Studio Code** | <a href="https://code.visualstudio.com/sha/download?build=stable&os=darwin-universal-dmg"><img src=".github/images/Code_512x512x32.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Visual', 'full_update_sha256')}` |
-| **Microsoft Copilot** | <a href="https://go.microsoft.com/fwlink/?linkid=2325438"><img src=".github/images/Copilot.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Copilot', 'full_update_sha256')}` |
-| **AutoUpdate** | <a href="https://go.microsoft.com/fwlink/?linkid=830196"><img src=".github/images/autoupdate.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'MAU', 'full_update_sha256')}` |
+| **Visual Studio Code** | <a href="{get_standalone_package_detail(packages, 'Visual', 'full_update_download')}"><img src=".github/images/Code_512x512x32.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Visual', 'full_update_sha256')}` |
+| **Microsoft Copilot** | <a href="{get_standalone_package_detail(packages, 'Copilot', 'full_update_download')}"><img src=".github/images/Copilot.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Copilot', 'full_update_sha256')}` |
+| **AutoUpdate** | <a href="{get_standalone_package_detail(packages, 'MAU', 'full_update_download')}"><img src=".github/images/autoupdate.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'MAU', 'full_update_sha256')}` |
 | **Licensing Helper Tool** | <a href="{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'full_update_download')}"><img src=".github/images/pkg-icon.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Licensing Helper Tool', 'full_update_sha256')}` |
 | **Quick Assist** | <a href="{get_standalone_package_detail(packages, 'Quick Assist', 'full_update_download')}"><img src=".github/images/quickassist.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Quick Assist', 'full_update_sha256')}` |
 | **Remote Help** | <a href="{get_standalone_package_detail(packages, 'Remote Help', 'full_update_download')}"><img src=".github/images/remotehelp.png" alt="Download Image" width="80"></a> | `{get_standalone_package_detail(packages, 'Remote Help', 'full_update_sha256')}` |
@@ -458,76 +463,60 @@ Below are a list of helpful links.
     return content
 
 def overwrite_readme(file_path, content):
-    with open(file_path, "w") as file:
+    with open(file_path, "w", encoding="utf-8") as file:
         file.write(content)
-    print(f"README.md has been overwritten.")
+    logging.info(f"{file_path} has been overwritten.")
+
+def _detail(packages, package_name, detail):
+    package_name = package_name.lower()
+    detail = detail.lower()
+
+    if package_name in packages and detail in packages[package_name]:
+        return packages[package_name][detail]
+    return MISSING
 
 def get_standalone_package_detail(packages, package_name, detail):
-    package_name = package_name.lower()
-    detail = detail.lower()
-
-    if package_name in packages and detail in packages[package_name]:
-        return packages[package_name][detail]
-    else:
-        return None
+    return _detail(packages, package_name, detail)
 
 def get_ios_package_detail(ios_packages, package_name, detail):
-    package_name = package_name.lower()
-    detail = detail.lower()
-
-    if package_name in ios_packages and detail in ios_packages[package_name]:
-        return ios_packages[package_name][detail]
-    else:
-        return None
+    return _detail(ios_packages, package_name, detail)
 
 def get_macos_package_detail(macos_packages, package_name, detail):
-    package_name = package_name.lower()
-    detail = detail.lower()
-
-    if package_name in macos_packages and detail in macos_packages[package_name]:
-        return macos_packages[package_name][detail]
-    else:
-        return None
+    return _detail(macos_packages, package_name, detail)
 
 def get_onedrive_detail(packages, package_name, detail):
-    package_name = package_name.lower()
-    detail = detail.lower()
-    
-    if package_name in packages and detail in packages[package_name]:
-        return packages[package_name][detail]
-    else:
-        return None
+    return _detail(packages, package_name, detail)
 
-if __name__ == "__main__":
-    # Define file paths
-    xml_file_path = "latest_raw_files/macos_standalone_latest.xml"  # Update this path if the file is located elsewhere
-    ios_appstore_xml_path = "latest_raw_files/ios_appstore_latest.xml"
-    macos_appstore_xml_path = "latest_raw_files/macos_appstore_latest.xml"
-    onedrive_xml_path = "latest_raw_files/macos_standalone_onedrive_all.xml"
-    edge_xml_path = "latest_raw_files/macos_standalone_edge_all.xml"  # Update this path if the file is located elsewhere
-    readme_file_path = "README.md"
+def main(root="."):
+    """Regenerate <root>/README.md from <root>/latest_raw_files. Returns an exit code."""
+    root = Path(root)
+    data_dir = root / "latest_raw_files"
 
-    # Parse the XML and generate content
-    global_last_updated, packages = parse_latest_xml(xml_file_path)
-    ios_last_updated, ios_packages = parse_appstore_xml(ios_appstore_xml_path)
-    macos_last_updated, macos_packages = parse_appstore_xml(macos_appstore_xml_path)
-    
-    # Parse OneDrive XML
-    onedrive_data = parse_onedrive_xml(onedrive_xml_path)
-    
-    # Update the OneDrive package information with data from the specific XML
-    packages["onedrive"] = onedrive_data
-    
-    # Parse Edge XML
-    edge_data = parse_edge_xml(edge_xml_path)
-    if edge_data:
-        packages["edge"] = edge_data
+    try:
+        global_last_updated, packages = parse_latest_xml(data_dir / "macos_standalone_latest.xml")
+        ios_last_updated, ios_packages = parse_appstore_xml(data_dir / "ios_appstore_latest.xml")
+        macos_last_updated, macos_packages = parse_appstore_xml(data_dir / "macos_appstore_latest.xml")
+        # OneDrive and Edge rows come from their own feeds.
+        packages["onedrive"] = parse_onedrive_xml(data_dir / "macos_standalone_onedrive_all.xml")
+        packages["edge"] = parse_edge_xml(data_dir / "macos_standalone_edge_all.xml")
+    except FeedError as e:
+        logging.error(f"{e}. README.md was not updated.")
+        return 1
 
     # Merge packages
     packages.update(ios_packages)
     packages.update(macos_packages)
 
-    readme_content = generate_readme_content(global_last_updated, packages, ios_packages, macos_packages)
+    readme_content = generate_readme_content(
+        global_last_updated, packages, ios_packages, macos_packages, ios_last_updated, macos_last_updated
+    )
 
     # Overwrite the README file
-    overwrite_readme(readme_file_path, readme_content)
+    overwrite_readme(root / "README.md", readme_content)
+    return 0
+
+if __name__ == "__main__":
+    # Configured here, not at import, so importing this module leaves the
+    # importer's logging alone.
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+    raise SystemExit(main())

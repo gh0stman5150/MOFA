@@ -14,18 +14,23 @@
 # 1.1.0 - MOFA refresh: stop new Teams (MSTeams) and clear its cookies, HTTP storage and system
 #         preferences, log and guard every removal, skip user data when no console user has a home
 #         under /Users, and return nonzero when a removal fails.
+# 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
+#         does); sourcing the file only defines its functions, so tests can exercise them with
+#         stubbed commands. Behavior under Jamf (messages, order and exit codes) is unchanged.
+#
+# Jamf parameters: none. Parameters 4 and later are ignored.
 # ============================================================
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-echo "Office-Reset: Starting postinstall for Reset_Factory"
-
-if [[ $EUID -ne 0 ]]; then
-	echo "Office-Reset: This script must be run as root." >&2
-	exit 1
-fi
-
 REMOVAL_FAILURES=0
+
+RequireRoot() {
+	if [[ $EUID -ne 0 ]]; then
+		echo "Office-Reset: This script must be run as root." >&2
+		exit 1
+	fi
+}
 
 FinishRun() {
 	if (( REMOVAL_FAILURES > 0 )); then
@@ -97,100 +102,107 @@ removeFileList() {
 	done
 }
 
-## Main
-LoggedInUser=$(GetLoggedInUser)
-SetHomeFolder "$LoggedInUser"
-echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME"
+main() { # Jamf passes $1-$3; this script takes no custom parameters
+	echo "Office-Reset: Starting postinstall for Reset_Factory"
+	RequireRoot
 
-echo "Office-Reset: Stopping apps and services"
-/usr/bin/pkill -9 'Microsoft Word'
-/usr/bin/pkill -9 'Microsoft Excel'
-/usr/bin/pkill -9 'Microsoft PowerPoint'
-/usr/bin/pkill -9 'Microsoft Outlook'
-/usr/bin/pkill -9 'Microsoft OneNote'
-/usr/bin/pkill -9 'OneDrive'
-/usr/bin/pkill -9 'FinderSync'
-/usr/bin/pkill -9 'OneDriveStandaloneUpdater'
-/usr/bin/pkill -9 'OneDriveUpdater'
-/usr/bin/pkill -9 'MSTeams'
-/usr/bin/pkill -9 'Microsoft Teams'
-/usr/bin/pkill -9 'Microsoft Teams Helper'
-/usr/bin/pkill -9 'Microsoft AutoUpdate'
-/usr/bin/pkill -9 'Microsoft Update Assistant'
-/usr/bin/pkill -9 'Microsoft AU Daemon'
-/usr/bin/pkill -9 'Microsoft AU Bootstrapper'
-/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.helper'
-/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.bootstrapper.helper'
+	LoggedInUser=$(GetLoggedInUser)
+	SetHomeFolder "$LoggedInUser"
+	echo "Office-Reset: Running as: ${LoggedInUser:-<none>}; Home Folder: $HOME"
 
-echo "Office-Reset: Removing preferences and containers"
-removePathList \
-	"/Library/Logs/Microsoft/autoupdate.log" \
-	"/Library/Logs/Microsoft/InstallLogs" \
-	"/Library/Logs/Microsoft/Teams" \
-	"/Library/Logs/Microsoft/OneDrive"
+	echo "Office-Reset: Stopping apps and services"
+	/usr/bin/pkill -9 'Microsoft Word'
+	/usr/bin/pkill -9 'Microsoft Excel'
+	/usr/bin/pkill -9 'Microsoft PowerPoint'
+	/usr/bin/pkill -9 'Microsoft Outlook'
+	/usr/bin/pkill -9 'Microsoft OneNote'
+	/usr/bin/pkill -9 'OneDrive'
+	/usr/bin/pkill -9 'FinderSync'
+	/usr/bin/pkill -9 'OneDriveStandaloneUpdater'
+	/usr/bin/pkill -9 'OneDriveUpdater'
+	/usr/bin/pkill -9 'MSTeams'
+	/usr/bin/pkill -9 'Microsoft Teams'
+	/usr/bin/pkill -9 'Microsoft Teams Helper'
+	/usr/bin/pkill -9 'Microsoft AutoUpdate'
+	/usr/bin/pkill -9 'Microsoft Update Assistant'
+	/usr/bin/pkill -9 'Microsoft AU Daemon'
+	/usr/bin/pkill -9 'Microsoft AU Bootstrapper'
+	/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.helper'
+	/usr/bin/pkill -9 -f 'com.microsoft.autoupdate.bootstrapper.helper'
 
-removeFileList \
-	"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
-	"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
-	"$HOME/Library/Preferences/com.microsoft.shared.plist" \
-	"$HOME/Library/Preferences/com.microsoft.office.plist" \
-	"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
-	"/Library/Preferences/com.microsoft.shared.plist" \
-	"/Library/Preferences/com.microsoft.office.plist" \
-	"/Library/Preferences/com.microsoft.teams.plist" \
-	"/Library/Preferences/com.microsoft.teams2.plist" \
-	"/Library/Managed Preferences/com.microsoft.shared.plist" \
-	"/Library/Managed Preferences/com.microsoft.office.plist" \
-	"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
-	"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist"
+	echo "Office-Reset: Removing preferences and containers"
+	removePathList \
+		"/Library/Logs/Microsoft/autoupdate.log" \
+		"/Library/Logs/Microsoft/InstallLogs" \
+		"/Library/Logs/Microsoft/Teams" \
+		"/Library/Logs/Microsoft/OneDrive"
 
-removePathList "$HOME/Library/Application Support/Microsoft"
+	removeFileList \
+		"$HOME/Library/Preferences/com.microsoft.autoupdate2.plist" \
+		"$HOME/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+		"$HOME/Library/Preferences/com.microsoft.shared.plist" \
+		"$HOME/Library/Preferences/com.microsoft.office.plist" \
+		"/Library/Preferences/com.microsoft.autoupdate.fba.plist" \
+		"/Library/Preferences/com.microsoft.shared.plist" \
+		"/Library/Preferences/com.microsoft.office.plist" \
+		"/Library/Preferences/com.microsoft.teams.plist" \
+		"/Library/Preferences/com.microsoft.teams2.plist" \
+		"/Library/Managed Preferences/com.microsoft.shared.plist" \
+		"/Library/Managed Preferences/com.microsoft.office.plist" \
+		"/var/root/Library/Preferences/com.microsoft.autoupdate2.plist" \
+		"/var/root/Library/Preferences/com.microsoft.autoupdate.fba.plist"
 
-removePathList \
-	"$HOME/Library/Caches/com.microsoft.autoupdate2" \
-	"$HOME/Library/Caches/com.microsoft.autoupdate.fba"
+	removePathList "$HOME/Library/Application Support/Microsoft"
 
-removePathList "/Library/Application Support/Microsoft/Office365"
+	removePathList \
+		"$HOME/Library/Caches/com.microsoft.autoupdate2" \
+		"$HOME/Library/Caches/com.microsoft.autoupdate.fba"
 
-removePathList \
-	"$HOME/Library/Group Containers/UBF8T346G9.Office" \
-	"$HOME/Library/Group Containers/UBF8T346G9.ms" \
-	"$HOME/Library/Group Containers/UBF8T346G9.OfficeOsfWebHost"
+	removePathList "/Library/Application Support/Microsoft/Office365"
 
-removePathList \
-	"$HOME/Library/Application Scripts/UBF8T346G9.com.microsoft.oneauth" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.Office" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.ms" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOsfWebHost" \
-	"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration"
+	removePathList \
+		"$HOME/Library/Group Containers/UBF8T346G9.Office" \
+		"$HOME/Library/Group Containers/UBF8T346G9.ms" \
+		"$HOME/Library/Group Containers/UBF8T346G9.OfficeOsfWebHost"
 
-removeFileList \
-	"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.teams.binarycookies" \
-	"$HOME/Library/Cookies/com.microsoft.teams2.binarycookies"
+	removePathList \
+		"$HOME/Library/Application Scripts/UBF8T346G9.com.microsoft.oneauth" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.Office" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.ms" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOsfWebHost" \
+		"$HOME/Library/Application Scripts/UBF8T346G9.OfficeOneDriveSyncIntegration"
 
-removePathList \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba" \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater" \
-	"$HOME/Library/HTTPStorages/com.microsoft.teams" \
-	"$HOME/Library/HTTPStorages/com.microsoft.teams2"
+	removeFileList \
+		"$HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.OneDriveUpdater.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.teams.binarycookies" \
+		"$HOME/Library/Cookies/com.microsoft.teams2.binarycookies"
 
-removeFileList \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.teams.binarycookies" \
-	"$HOME/Library/HTTPStorages/com.microsoft.teams2.binarycookies"
+	removePathList \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba" \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDrive" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater" \
+		"$HOME/Library/HTTPStorages/com.microsoft.teams" \
+		"$HOME/Library/HTTPStorages/com.microsoft.teams2"
 
-removePathList \
-	"$HOME/Library/Containers/com.microsoft.errorreporting" \
-	"$HOME/Library/Containers/com.microsoft.netlib.shipassertprocess" \
-	"$HOME/Library/Containers/com.microsoft.Office365ServiceV2" \
-	"$HOME/Library/Containers/com.microsoft.RMS-XPCService"
+	removeFileList \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate.fba.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.autoupdate2.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDrive.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.OneDriveStandaloneUpdater.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.teams.binarycookies" \
+		"$HOME/Library/HTTPStorages/com.microsoft.teams2.binarycookies"
 
-FinishRun
+	removePathList \
+		"$HOME/Library/Containers/com.microsoft.errorreporting" \
+		"$HOME/Library/Containers/com.microsoft.netlib.shipassertprocess" \
+		"$HOME/Library/Containers/com.microsoft.Office365ServiceV2" \
+		"$HOME/Library/Containers/com.microsoft.RMS-XPCService"
+
+	FinishRun
+}
+
+# Run only when executed (Jamf). Sourcing this file, as tests/reset_scripts does, defines functions only.
+if [[ "${ZSH_EVAL_CONTEXT}" != *:file ]]; then main "$@"; fi
