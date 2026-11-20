@@ -139,9 +139,9 @@ t_setup_main() { # console user alice with a sandbox home, an installed sandbox 
 	T_APP_VERSION="4.83.26040910"
 }
 
-t_rm_calls_for_app() { # prints the /bin/rm calls that target the sandbox app bundle
+t_rm_calls_for_app() { # prints the recorded removals that target the sandbox app bundle
 	local line
-	for line in "${(@f)$(mofa_calls /bin/rm)}"; do
+	for line in "${(@f)$(mofa_removal_calls)}"; do
 		[[ "$line" == *"Microsoft AutoUpdate.app"* ]] && print -r -- "$line"
 	done
 	return 0
@@ -299,28 +299,28 @@ for bad in "" "relative/path" "." "/"; do
 	mofa_assert_eq 1 "$REMOVAL_FAILURES" "refusing '${bad}' counts as a removal failure"
 	mofa_assert_contains "$MOFA_STDERR" "Refusing to remove unsafe path" "refusing '${bad}' is logged"
 done
-mofa_assert_not_called /bin/rm "rm never runs for an unsafe target"
+mofa_assert_nothing_removed "rm never runs for an unsafe target"
 
-mofa_case "removeTarget calls rm with the option, -- and the exact path"
+mofa_case "removeTarget removes with zsh's paranoid rm (zf_rm -s), the option and the full path"
 t_reset_globals
 target="$T_HOME/Library/Application Support/Microsoft AU Daemon"
 mofa_mkdir "$target"
 mofa_capture removePathList "$target"
 mofa_assert_status 0 "removePathList succeeds"
-mofa_assert_called /bin/rm -rf -- "$target"
-mofa_assert_eq 1 "$(mofa_call_count /bin/rm)" "rm runs once"
+mofa_assert_removed -rf "$target"
+mofa_assert_eq 1 "$(mofa_removal_count)" "rm runs once"
 mofa_assert_eq 0 "$REMOVAL_FAILURES" "no failure counted"
 [[ -d "$target" ]] && mofa_pass "the stub did not delete anything" || mofa_fail "the stub did not delete anything"
 plist="$T_HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
 mofa_write_file "$plist" "x"
 mofa_capture removeFileList "$plist"
-mofa_assert_called /bin/rm -f -- "$plist"
+mofa_assert_removed -f "$plist"
 
 mofa_case "removeTarget counts rm failures and skips missing paths"
 t_reset_globals
 plist="$T_HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
 mofa_write_file "$plist" "x"
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 mofa_capture removeTarget -f "$plist"
 mofa_assert_status 1 "a failed rm returns 1"
 mofa_assert_eq 1 "$REMOVAL_FAILURES" "a failed rm is counted"
@@ -329,7 +329,7 @@ mofa_reset_calls
 mofa_capture removeTarget -rf "$T_HOME/Library/Caches/missing"
 mofa_assert_status 0 "a missing path is not an error"
 mofa_assert_contains "$MOFA_STDOUT" "Skipping missing path" "a missing path is logged"
-mofa_assert_not_called /bin/rm "rm does not run for a missing path"
+mofa_assert_nothing_removed "rm does not run for a missing path"
 
 mofa_case "CleanupWorkDir removes only its own download folder"
 t_reset_globals
@@ -337,7 +337,7 @@ mofa_mkdir "$T_WORK"
 for WORK_DIR in "$T_WORK" "/" "" "/private/var/tmp/mofa_reset.does_not_exist_$$"; do
 	mofa_run CleanupWorkDir
 done
-mofa_assert_not_called /bin/rm "nothing outside /private/var/tmp/mofa_reset.* is removed"
+mofa_assert_nothing_removed "nothing outside /private/var/tmp/mofa_reset.* is removed"
 
 # --- launchd jobs -------------------------------------------------------------------
 mofa_case "bootoutJob stops existing MAU jobs in the right domain"
@@ -433,7 +433,7 @@ mofa_run DownloadAndVerifyPackage
 mofa_assert_status 1 "a team ID mismatch exits 1"
 mofa_assert_contains "$MOFA_STDERR" "not signed by Microsoft" "the mismatch is logged"
 mofa_assert_called /usr/bin/mktemp -d /private/var/tmp/mofa_reset.XXXXXX
-mofa_assert_called /usr/bin/curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$T_WORK/package.pkg" -- "$T_MAU_URL"
+mofa_assert_called /usr/bin/curl -q -fsSL --retry 3 --connect-timeout 30 --max-time 3600 -o "$T_WORK/package.pkg" -- "$T_MAU_URL"
 mofa_assert_called /usr/sbin/pkgutil --check-signature "$T_WORK/package.pkg"
 mofa_assert_not_called /usr/sbin/spctl "Gatekeeper is not consulted after a signer mismatch"
 mofa_assert_not_called /usr/sbin/installer "nothing is installed"
@@ -483,7 +483,7 @@ t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_stub /usr/bin/curl 22
 mofa_run RepairApp replace
 mofa_assert_status 1 "RepairApp exits 1"
-mofa_assert_not_called /bin/rm "the installed app is not removed"
+mofa_assert_nothing_removed "the installed app is not removed"
 mofa_assert_not_called /usr/sbin/installer "nothing is installed"
 
 mofa_case "RepairApp replace verifies, removes the app, then installs"
@@ -492,10 +492,10 @@ mofa_mkdir "$T_APP"
 t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_run RepairApp replace
 mofa_assert_status 0 "RepairApp replace returns 0 after a successful install"
-mofa_assert_called /bin/rm -rf -- "$T_APP"
+mofa_assert_removed -rf "$T_APP"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/package.pkg" -target /
-mofa_assert_called_before /usr/sbin/spctl /bin/rm "the package is verified before the app is removed"
-mofa_assert_called_before /bin/rm /usr/sbin/installer "the old app is removed before installing"
+mofa_assert_called_before /usr/sbin/spctl zf_rm "the package is verified before the app is removed"
+mofa_assert_called_before zf_rm /usr/sbin/installer "the old app is removed before installing"
 mofa_stub /usr/sbin/installer 1
 mofa_run RepairApp replace
 mofa_assert_status 1 "an installer failure exits 1"
@@ -507,7 +507,7 @@ mofa_mkdir "$T_APP"
 t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_run RepairApp
 mofa_assert_status 0 "RepairApp returns 0 after a successful install"
-mofa_assert_not_called /bin/rm "the installed app is kept"
+mofa_assert_nothing_removed "the installed app is kept"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/package.pkg" -target /
 
 # --- End-to-end flows with every command stubbed --------------------------------------
@@ -521,10 +521,10 @@ mofa_assert_eq 6 "$(mofa_call_count /usr/bin/pkill)" "six MAU processes are stop
 mofa_assert_called /usr/bin/pkill -9 "Microsoft AutoUpdate"
 mofa_assert_called /usr/bin/pkill -9 "Microsoft AU Daemon"
 mofa_assert_called /usr/bin/pkill -9 -f com.microsoft.autoupdate.bootstrapper.helper
-mofa_assert_called /bin/rm -f -- "$T_HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Caches/com.microsoft.autoupdate2"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Application Support/Microsoft AU Daemon"
-mofa_assert_called_before /usr/bin/pkill /bin/rm "MAU is stopped before its data is removed"
+mofa_assert_removed -f "$T_HOME/Library/Preferences/com.microsoft.autoupdate2.plist"
+mofa_assert_removed -rf "$T_HOME/Library/Caches/com.microsoft.autoupdate2"
+mofa_assert_removed -rf "$T_HOME/Library/Application Support/Microsoft AU Daemon"
+mofa_assert_called_before /usr/bin/pkill zf_rm "MAU is stopped before its data is removed"
 mofa_assert_called /usr/bin/killall cfprefsd
 mofa_assert_called_before /usr/bin/killall /usr/bin/defaults "cfprefsd is flushed before preferences are rewritten"
 mofa_assert_called /usr/bin/defaults write "$T_MAU_PREFS" AcknowledgedDataCollectionPolicy -string RequiredDataOnly
@@ -547,8 +547,8 @@ if [[ "$MOFA_TEST_ROOT" == /private/var/folders/?* ]]; then
 	mofa_write_file "$T_DIR/T/TelemetryUploadFilecom.microsoft.autoupdate2.txt" "x"
 	mofa_run t_main_flow / computer alice reset
 	mofa_assert_status 0 "reset flow exits 0"
-	mofa_assert_called /bin/rm -rf -- "$T_DIR/T/MSauClones"
-	mofa_assert_called /bin/rm -f -- "$T_DIR/T/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
+	mofa_assert_removed -rf "$T_DIR/T/MSauClones"
+	mofa_assert_removed -f "$T_DIR/T/TelemetryUploadFilecom.microsoft.autoupdate2.txt"
 fi
 
 mofa_case "main without a console user leaves user data alone"
@@ -558,7 +558,7 @@ mofa_stub /usr/sbin/scutil 0 "  Name : loginwindow"
 mofa_run t_main_flow / computer alice reset
 mofa_assert_status 0 "reset flow exits 0"
 mofa_assert_contains "$MOFA_STDOUT" "Running as: <none>; Home Folder: /var/empty; Temp Folder: /var/empty; Mode: reset" "no user context is logged"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "$T_HOME" "the sandbox user's data is not touched"
+mofa_assert_not_contains "$(mofa_removal_calls)" "$T_HOME" "the sandbox user's data is not touched"
 mofa_assert_not_contains "$(mofa_calls /bin/launchctl)" "asuser" "nothing runs as a user"
 
 mofa_case "main reset flow reports an old or damaged MAU without reinstalling"
@@ -596,7 +596,7 @@ T_CODESIGN_ERROR="a sealed resource is missing or invalid"
 mofa_run t_main_flow / computer alice repair
 mofa_assert_status 0 "repair flow exits 0"
 mofa_assert_contains "$MOFA_STDOUT" "app bundle is damaged and will be reinstalled" "the replacement is logged"
-mofa_assert_called /bin/rm -rf -- "$T_APP"
+mofa_assert_removed -rf "$T_APP"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/package.pkg" -target /
 mofa_assert_called_before /usr/sbin/spctl /usr/sbin/installer "the package is verified before installing"
 
@@ -635,7 +635,7 @@ t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_run t_main_flow / computer alice force
 mofa_assert_status 0 "a successful reinstall exits 0"
 mofa_assert_contains "$MOFA_STDOUT" "Force mode enabled, reinstalling Microsoft AutoUpdate" "force mode is logged"
-mofa_assert_called /bin/rm -rf -- "$T_APP"
+mofa_assert_removed -rf "$T_APP"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/package.pkg" -target /
 mofa_assert_called_before /usr/sbin/installer t_cleanup_probe "cleanup runs after the install"
 mofa_assert_not_called /usr/bin/codesign "force mode does not re-check the signature"
@@ -644,10 +644,121 @@ mofa_assert_called /usr/bin/defaults write "$T_MAU_PREFS" Applications -dict-add
 mofa_case "main reset flow exits 1 when a removal fails"
 t_reset_globals
 t_setup_main
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 mofa_run t_main_flow / computer alice reset
 mofa_assert_status 1 "a removal failure is reported to Jamf"
 mofa_assert_contains "$MOFA_STDERR" "removal failure(s)" "the failure count is logged"
 mofa_assert_contains "$MOFA_STDOUT" "Restarting update services" "the run still finishes before reporting"
+
+# --- 1.3.0: root never follows a link planted above or below a removal target ----------
+# The cases marked "real zf_rm" run zsh's own rm (a builtin, not a stub) on fixtures, and only
+# inside the kernel sandbox, which confines every write to this test's folder.
+t_link_fixture() { # $1: link target, $2: link path inside the sandbox
+	if [[ "${2:a}" != "$MOFA_TEST_ROOT"/?* ]]; then
+		mofa_fail "t_link_fixture refused a link outside the sandbox: $2"
+		return 1
+	fi
+	command /bin/ln -s -- "$1" "$2"
+}
+
+mofa_case "removeTarget refuses unsafe target spellings"
+mofa_mkdir "$MOFA_TEST_ROOT/spelled"
+for bad in "$MOFA_TEST_ROOT/spelled/" "$MOFA_TEST_ROOT/spelled/." "$MOFA_TEST_ROOT/spelled/.."; do
+	REMOVAL_FAILURES=0
+	mofa_capture removeTarget -rf "$bad"
+	mofa_assert_status 1 "removeTarget refuses '${bad}'"
+	mofa_assert_eq 1 "$REMOVAL_FAILURES" "refusing '${bad}' counts as a removal failure"
+done
+mofa_assert_nothing_removed "nothing is removed for an unsafe spelling"
+
+mofa_case "removeTarget maps macOS's own /var and /tmp links to /private"
+REMOVAL_FAILURES=0
+if [[ "$MOFA_TEST_ROOT" == /private/(var|tmp)/* ]]; then
+	mofa_mkdir "$MOFA_TEST_ROOT/system_link/com.microsoft.App"
+	mofa_capture removeTarget -rf "${MOFA_TEST_ROOT#/private}/system_link/com.microsoft.App"
+	mofa_assert_status 0 "removeTarget accepts a path through macOS's own link"
+	mofa_assert_called zf_rm -rs -- "$MOFA_TEST_ROOT/system_link/com.microsoft.App"
+else
+	mofa_pass "skipped: the sandbox is not under /private/var or /private/tmp"
+fi
+
+mofa_case "removeTarget reports a locked file instead of letting zf_rm skip it"
+REMOVAL_FAILURES=0
+mofa_write_file "$MOFA_TEST_ROOT/locked/file.plist" "x"
+mofa_stub zf_rm 0 "zf_rm: remove \`$MOFA_TEST_ROOT/locked/file.plist', overriding mode 0444? "
+mofa_capture removeTarget -f "$MOFA_TEST_ROOT/locked/file.plist"
+mofa_assert_status 1 "removeTarget fails when zf_rm asks to override a locked file"
+mofa_assert_eq 1 "$REMOVAL_FAILURES" "the locked file counts as a removal failure"
+mofa_assert_contains "$MOFA_STDERR" "it holds a locked or read-only file" "the reason is logged"
+
+mofa_case "removeTarget fails closed when zsh's files module is unavailable"
+REMOVAL_FAILURES=0
+mofa_mkdir "$MOFA_TEST_ROOT/no_module/target"
+mofa_stub zmodload 1
+mofa_capture removeTarget -rf "$MOFA_TEST_ROOT/no_module/target"
+unfunction zmodload
+mofa_assert_status 1 "removeTarget fails without zf_rm"
+mofa_assert_contains "$MOFA_STDERR" "zsh's files module is unavailable" "the reason is logged"
+mofa_assert_nothing_removed "nothing falls back to /bin/rm"
+
+if (( MOFA_KERNEL_SANDBOX )); then
+	mofa_case "removeTarget refuses a target below a symbolically linked folder (real zf_rm)"
+	REMOVAL_FAILURES=0
+	t_link_dir="$MOFA_TEST_ROOT/linked_parent"
+	mofa_mkdir "$t_link_dir/other_user/Containers/com.microsoft.App" "$t_link_dir/home/Library"
+	mofa_write_file "$t_link_dir/other_user/Containers/com.microsoft.App/keep" "other user's data"
+	t_link_fixture "$t_link_dir/other_user/Containers" "$t_link_dir/home/Library/Containers"
+	unfunction zf_rm
+	mofa_capture removeTarget -rf "$t_link_dir/home/Library/Containers/com.microsoft.App"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "removeTarget refuses a target reached through a planted link"
+	mofa_assert_eq 1 "$REMOVAL_FAILURES" "the refusal counts as a removal failure"
+	mofa_assert_contains "$MOFA_STDERR" \
+		"Refusing to remove $t_link_dir/home/Library/Containers/com.microsoft.App: a folder in its path is a symbolic link" \
+		"the refusal is logged"
+	[[ -e "$t_link_dir/other_user/Containers/com.microsoft.App/keep" ]] \
+		&& mofa_pass "the other user's data is kept" || mofa_fail "the other user's data is kept"
+
+	mofa_case "removeTarget removes a folder but not what a link inside it points to (real zf_rm)"
+	REMOVAL_FAILURES=0
+	t_link_dir="$MOFA_TEST_ROOT/link_inside"
+	mofa_mkdir "$t_link_dir/target/inner" "$t_link_dir/other_user"
+	mofa_write_file "$t_link_dir/other_user/keep" "other user's data"
+	t_link_fixture "$t_link_dir/other_user" "$t_link_dir/target/inner/link"
+	unfunction zf_rm
+	mofa_capture removeTarget -rf "$t_link_dir/target"
+	mofa_stub zf_rm
+	mofa_assert_status 0 "removeTarget removes the folder"
+	[[ ! -e "$t_link_dir/target" ]] && mofa_pass "the folder is gone" || mofa_fail "the folder is gone"
+	[[ -e "$t_link_dir/other_user/keep" ]] \
+		&& mofa_pass "the link's target is kept" || mofa_fail "the link's target is kept"
+
+	mofa_case "removeTarget reports a read-only file that zf_rm keeps unasked (real zf_rm)"
+	REMOVAL_FAILURES=0
+	mofa_mkdir "$MOFA_TEST_ROOT/readonly"
+	( umask 0277; print -r -- x >| "$MOFA_TEST_ROOT/readonly/file.plist" )
+	unfunction zf_rm
+	mofa_capture removeTarget -f "$MOFA_TEST_ROOT/readonly/file.plist"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "removeTarget fails for a file zf_rm will not delete unasked"
+	mofa_assert_contains "$MOFA_STDERR" "it holds a locked or read-only file" "the reason is logged"
+	[[ -e "$MOFA_TEST_ROOT/readonly/file.plist" ]] && mofa_pass "the file is kept" || mofa_fail "the file is kept"
+else
+	mofa_pass "skipped: the real zf_rm cases need the kernel sandbox"
+fi
+
+mofa_case "SetHomeFolder keeps HOME out of root's child processes"
+mofa_assert_contains "${(t)HOME}" export "the harness exports HOME before the call"
+mofa_capture SetHomeFolder ""
+mofa_assert_not_contains "${(t)HOME}" export "without a console user, HOME is no longer exported"
+if [[ -d /Users/Shared ]]; then
+	export HOME
+	mofa_stub /usr/bin/dscl 0 "NFSHomeDirectory: /Users/Shared"
+	mofa_stub_passthrough /usr/bin/awk
+	mofa_stub /usr/bin/id 0 "501"
+	mofa_capture SetHomeFolder mofatestuser
+	mofa_assert_eq "/Users/Shared" "$HOME" "SetHomeFolder points HOME at the user's home"
+	mofa_assert_not_contains "${(t)HOME}" export "with a console user, HOME is no longer exported"
+fi
 
 mofa_finish

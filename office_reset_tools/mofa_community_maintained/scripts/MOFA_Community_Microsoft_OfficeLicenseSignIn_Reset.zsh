@@ -19,6 +19,10 @@
 #         only from the console user's own database files directly inside ~/Library/Keychains/<UUID>,
 #         sqlite3 waits for securityd's lock instead of competing with it, and the result is logged;
 #         a failed delete now counts as a removal failure instead of being discarded.
+# 1.3.0 - Security: removals use zsh's own rm in paranoid mode (zf_rm -s), which refuses a
+#         symbolic link the console user planted in any folder above or below a target (for
+#         example ~/Library/Containers), even one swapped in while it runs; a refusal fails the
+#         policy. The console user's home is no longer exported to root's child processes.
 #
 # Jamf parameters: none. Parameters 4 and later are ignored.
 # ============================================================
@@ -52,6 +56,9 @@ GetLoggedInUser() {
 SetHomeFolder() {
 	local target_user="$1"
 
+	# HOME holds the console user's home for the path lists, but root's child processes must not
+	# inherit it (curl, for example, would read that user's ~/.curlrc), so it stays unexported.
+	typeset -g +x HOME
 	LoggedInUserID=""
 	if [[ -z "$target_user" || "$target_user" == "root" || "$target_user" == "_mbsetupuser" ]]; then
 		LoggedInUser=""
@@ -82,23 +89,57 @@ runAsUser() {
 	/bin/launchctl asuser "$LoggedInUserID" /usr/bin/sudo -H -u "$LoggedInUser" "$@"
 }
 
-removeTarget() { # $1: rm option, $2: target
+removeTarget() { # $1: rm option (-rf or -f), $2: target
 	local target="$2"
+	local physical_target physical_parent component component_path="" zf_output
+	local -i linked=0 zf_status
 
-	if [[ -z "$target" || "$target" == "/" || "$target" != /* ]]; then
+	if [[ -z "$target" || "$target" == "/" || "$target" != /* || "$target" == */ \
+		|| "${target:t}" == "." || "${target:t}" == ".." ]]; then
 		echo "Office-Reset: Refusing to remove unsafe path '${target}'" >&2
 		(( REMOVAL_FAILURES++ ))
 		return 1
 	fi
-	if [[ -e "$target" || -L "$target" ]]; then
-		echo "Office-Reset: Removing $target"
-		if ! /bin/rm "$1" -- "$target"; then
-			echo "Office-Reset: Failed to remove $target" >&2
-			(( REMOVAL_FAILURES++ ))
-			return 1
-		fi
-	else
+	if [[ ! -e "$target" && ! -L "$target" ]]; then
 		echo "Office-Reset: Skipping missing path $target"
+		return 0
+	fi
+	# The console user owns the folders in their home and temp folder and could replace one with a
+	# symbolic link (for example ~/Library/Containers -> another user's Library/Containers) to make
+	# root delete data elsewhere. zsh's own rm in paranoid mode (zf_rm -s) refuses a link in any
+	# folder above or below the target and checks each folder it enters, so a link swapped in while
+	# it runs is refused too. macOS's /var, /tmp and /etc links are resolved first, as zf_rm -s
+	# would refuse them.
+	if ! zmodload -F zsh/files b:zf_rm 2>/dev/null; then
+		echo "Office-Reset: Failed to remove $target: zsh's files module is unavailable" >&2
+		(( REMOVAL_FAILURES++ ))
+		return 1
+	fi
+	physical_target="$target"
+	case "$physical_target" in
+		/var/*|/tmp/*|/etc/*) physical_target="/private${physical_target}" ;;
+	esac
+	echo "Office-Reset: Removing $target"
+	# zf_rm asks before deleting a locked or read-only file; with no answer it keeps the file and
+	# still succeeds, so its question counts as a failure.
+	zf_output="$( ( zf_rm "${1//f/}s" -- "$physical_target" ) </dev/null 2>&1 )"
+	zf_status=$?
+	[[ -n "$zf_output" ]] && print -r -- "$zf_output" >&2
+	if (( zf_status != 0 )) || [[ "$zf_output" == *"overriding mode"* ]]; then
+		physical_parent="${physical_target:h}"
+		for component in ${(s:/:)physical_parent}; do
+			component_path+="/${component}"
+			[[ -L "$component_path" ]] && linked=1
+		done
+		if (( linked )); then
+			echo "Office-Reset: Refusing to remove $target: a folder in its path is a symbolic link" >&2
+		elif [[ "$zf_output" == *"overriding mode"* ]]; then
+			echo "Office-Reset: Failed to remove $target: it holds a locked or read-only file" >&2
+		else
+			echo "Office-Reset: Failed to remove $target" >&2
+		fi
+		(( REMOVAL_FAILURES++ ))
+		return 1
 	fi
 }
 

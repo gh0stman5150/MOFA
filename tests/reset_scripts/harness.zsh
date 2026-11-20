@@ -26,7 +26,8 @@
 #      script text mentions; PATH points at an empty directory, so any external command that
 #      is not stubbed fails with status 127 and is reported as a test failure.
 # A stub records its argv in the call log and returns a status the test chooses (default 0)
-# with optional output. Nothing a stub receives is executed.
+# with optional output. Nothing a stub receives is executed. zsh's own rm (zf_rm, which the
+# scripts' removal helpers use) is stubbed the same way.
 # Limit: an executable path assembled from variables at run time ("$DIR/tool") is not in the
 # script text, so it is not stubbed automatically; stub such paths with mofa_stub before use
 # (the kernel sandbox makes a missed one fail with "operation not permitted").
@@ -44,7 +45,11 @@
 #   mofa_reset_stubs / mofa_reset_calls
 #   mofa_scan_commands FILE         print the absolute command paths a file mentions
 #   mofa_calls [CMD]                print recorded calls (one per line, argv quoted with (q+))
+#   mofa_removal_calls              print the recorded /bin/rm and zf_rm calls, in order, like
+#                                   mofa_calls (use it to check what was removed)
 #   mofa_call_count [CMD]           print the number of recorded calls
+#   mofa_removal_count              print the number of recorded /bin/rm and zf_rm calls
+#   mofa_stub_removals [STATUS]     set the exit status of both /bin/rm and zf_rm
 #   mofa_run CMD [ARGS...]          run in a subshell; sets MOFA_STATUS MOFA_STDOUT MOFA_STDERR
 #                                   MOFA_OUTPUT (use for anything that may exit)
 #   mofa_capture CMD [ARGS...]      same, in the current shell, so globals persist (never for code
@@ -52,7 +57,10 @@
 #   mofa_mkdir DIR... / mofa_write_file FILE [CONTENT]   create sandbox-only fixtures
 #   Assertions: mofa_assert_eq EXPECTED ACTUAL MSG, mofa_assert_contains TEXT NEEDLE MSG,
 #     mofa_assert_not_contains TEXT NEEDLE MSG, mofa_assert_status EXPECTED MSG,
-#     mofa_assert_called CMD [ARGS...] (exact argv), mofa_assert_not_called CMD [MSG],
+#     mofa_assert_called CMD [ARGS...] (exact argv),
+#     mofa_assert_removed OPT PATH (the removal helpers' paranoid "zf_rm -s" call for a script
+#     rm option -rf or -f, with /var, /tmp and /etc mapped to /private),
+#     mofa_assert_nothing_removed [MSG], mofa_assert_not_called CMD [MSG],
 #     mofa_assert_no_calls MSG, mofa_assert_called_before CMD_A CMD_B MSG,
 #     mofa_assert_function_defined NAME, mofa_pass MSG, mofa_fail MSG [DETAILS]
 #   mofa_finish                     print the summary, clean the sandbox, exit 0 or 1
@@ -204,7 +212,8 @@ typeset -ga MOFA_STUBBED_COMMANDS
 typeset -ga __mofa_passthrough_allowed
 __mofa_passthrough_allowed=(awk grep sed tr cut head tail sort uniq wc basename dirname echo date printf)
 
-# Bare command names that are always stubbed, together with their system-directory paths.
+# Bare command names that are always stubbed, together with their system-directory paths. The
+# zf_ names are zsh/files builtins (the scripts remove with zf_rm); a stub function shadows them.
 typeset -ga __mofa_default_stubs
 __mofa_default_stubs=(
 	rm rmdir unlink srm mv cp ditto ln mkdir touch install chown chgrp chmod chflags xattr
@@ -213,6 +222,7 @@ __mofa_default_stubs=(
 	profiles jamf shutdown reboot halt diskutil tccutil scutil id mktemp find xargs env nohup tee
 	logger sw_vers stat getconf tar unzip zip dd networksetup systemsetup softwareupdate fdesetup
 	kmutil pmset lsregister sleep sh bash zsh python3 perl ruby
+	zf_rm zf_rmdir zf_mv zf_ln zf_chown zf_chmod zf_mkdir
 )
 
 __mofa_reset_env() {
@@ -404,6 +414,28 @@ mofa_reset_stubs() {
 
 mofa_reset_calls() {
 	: >| "$MOFA_CALL_LOG"
+}
+
+mofa_removal_calls() { # prints the recorded /bin/rm and zf_rm calls, in order
+	local -a __mofa_lines
+	local __mofa_line
+	__mofa_lines=(${(f)"$(<"$MOFA_CALL_LOG")"})
+	for __mofa_line in "${__mofa_lines[@]}"; do
+		[[ "$__mofa_line" == /bin/rm || "$__mofa_line" == "/bin/rm "* \
+			|| "$__mofa_line" == zf_rm || "$__mofa_line" == "zf_rm "* ]] && print -r -- "$__mofa_line"
+	done
+	return 0
+}
+
+mofa_removal_count() { # prints the number of recorded /bin/rm and zf_rm calls
+	local -a __mofa_lines
+	__mofa_lines=(${(f)"$(mofa_removal_calls)"})
+	print -r -- "${#__mofa_lines}"
+}
+
+mofa_stub_removals() { # $1: exit status for both /bin/rm and zf_rm (default 0)
+	mofa_stub /bin/rm "${1:-0}"
+	mofa_stub zf_rm "${1:-0}"
 }
 
 mofa_calls() { # $1: optional command; prints matching call lines
@@ -612,6 +644,27 @@ mofa_assert_called() { # $1: command, then the exact expected arguments
 		mofa_pass "called: ${__mofa_expected}"
 	else
 		mofa_fail "called: ${__mofa_expected}" "recorded calls:"$'\n'"$(mofa_calls)"
+	fi
+}
+
+# The scripts' removal helpers delete with zsh's own rm in paranoid mode, which refuses symbolic
+# links in every folder of the path: a script's "-rf" becomes "zf_rm -rs" and "-f" becomes
+# "zf_rm -s", and a leading /var, /tmp or /etc (macOS's own links) becomes /private/...
+mofa_assert_removed() { # $1: the script's rm option (-rf or -f), $2: absolute target path
+	local __mofa_target="$2"
+	case "$__mofa_target" in
+		/var/*|/tmp/*|/etc/*) __mofa_target="/private${__mofa_target}" ;;
+	esac
+	mofa_assert_called zf_rm "${1//f/}s" -- "$__mofa_target"
+}
+
+mofa_assert_nothing_removed() { # $1: optional message; passes when neither /bin/rm nor zf_rm ran
+	local __mofa_calls
+	__mofa_calls="$(mofa_removal_calls)"
+	if [[ -z "$__mofa_calls" ]]; then
+		mofa_pass "${1:-nothing was removed}"
+	else
+		mofa_fail "${1:-nothing was removed}" "recorded:"$'\n'"${__mofa_calls}"
 	fi
 }
 

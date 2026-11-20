@@ -180,4 +180,30 @@ mofa_assert_eq 1 "$child_status" "the child test fails"
 mofa_assert_contains "$child_output" "the script exited while being sourced" "the reason is reported"
 mofa_assert_not_contains "$child_output" "unreachable" "nothing after the exit runs"
 
+mofa_case "zsh's zf_rm is a stub, and the removal helpers cover zf_rm and /bin/rm"
+mofa_mkdir "$T_FIXTURES/zf target"
+zmodload -F zsh/files b:zf_rm # the stub function still shadows the real builtin
+zf_rm -rs -- "$T_FIXTURES/zf target"
+[[ -d "$T_FIXTURES/zf target" ]] && mofa_pass "the zf_rm stub deletes nothing" \
+	|| mofa_fail "the zf_rm stub deletes nothing"
+/bin/rm -f -- /absolute/target
+/usr/bin/touch "$T_FIXTURES/not a removal"
+mofa_assert_eq "$(__mofa_format_argv zf_rm -rs -- "$T_FIXTURES/zf target")"$'\n'"$(__mofa_format_argv /bin/rm -f -- /absolute/target)" \
+	"$(mofa_removal_calls)" "mofa_removal_calls lists only zf_rm and /bin/rm calls, in order"
+mofa_assert_eq 2 "$(mofa_removal_count)" "mofa_removal_count counts both"
+mofa_assert_removed -rf "$T_FIXTURES/zf target"
+mofa_assert_contains "$(t_expect_failure mofa_assert_removed -f "$T_FIXTURES/zf target")" "not ok" \
+	"mofa_assert_removed checks the option"
+mofa_assert_contains "$(t_expect_failure mofa_assert_nothing_removed)" "not ok" \
+	"mofa_assert_nothing_removed sees a removal"
+mofa_reset_calls
+mofa_assert_nothing_removed "nothing is recorded after mofa_reset_calls"
+zf_rm -s -- /private/var/folders/example
+mofa_assert_removed -f /var/folders/example
+mofa_stub_removals 3
+zf_rm -s -- /private/var/folders/example
+mofa_assert_eq 3 "$?" "mofa_stub_removals sets zf_rm's status"
+/bin/rm -f -- /absolute/target
+mofa_assert_eq 3 "$?" "mofa_stub_removals sets /bin/rm's status"
+
 mofa_finish

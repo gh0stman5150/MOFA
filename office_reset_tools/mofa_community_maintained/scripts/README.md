@@ -54,6 +54,15 @@ artifacts. Active scripts use `/bin/zsh --no-rcs` and system macOS tools only.
   policy because the policy remains active until installation finishes.
 - Download, signature, cleanup, and installer failures return nonzero so Jamf
   marks the policy failed.
+- Removals use zsh's own `rm` in paranoid mode (`zf_rm -s`), so they never
+  follow a symbolic link in any folder above or below a target, even one
+  swapped in while the removal runs. macOS's own `/var`, `/tmp` and `/etc` links
+  are resolved first. A target reached through any other link, such as a home
+  folder that is itself a symbolic link, is left in place, logged as "Refusing
+  to remove ...: a folder in its path is a symbolic link", and fails the policy.
+  A locked or read-only file also fails the policy instead of being skipped.
+  The sign-in reset's license-file moves and OneDrive's keychain database edit
+  do not have this protection yet.
 - Teams removal/reinstall logs to
   `/var/log/MOFA_Community_Microsoft_Teams_Removal_Reinstall.log`. Other scripts
   write to the Jamf policy log.

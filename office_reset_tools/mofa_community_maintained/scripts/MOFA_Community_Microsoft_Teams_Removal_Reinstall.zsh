@@ -26,6 +26,12 @@
 #         is removed only from existing homes under /Users, and the user's temp
 #         folder only after a successful lookup. The download URL is passed to
 #         curl after "--".
+# 1.3.0 - Security: removals use zsh's own rm in paranoid mode (zf_rm -s), which
+#         refuses a symbolic link a user planted in any folder above or below a target
+#         (for example ~/Library/Containers), even one swapped in while it runs; a
+#         refusal counts as a cleanup failure. The console user's home is no longer
+#         exported to root's child processes, and curl runs with --disable, so it
+#         never reads that user's ~/.curlrc.
 #
 # Jamf parameters (from $4, KEY=value; unsupported keys are ignored):
 #   MODE=reinstall (default) - remove Teams for all users with a home under /Users,
@@ -42,7 +48,7 @@ autoload -Uz is-at-least
 
 LOG_FILE="/var/log/MOFA_Community_Microsoft_Teams_Removal_Reinstall.log"
 LOG_TAG="MOFA Teams Remove/Reinstall"
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 
 APP_NAME="Microsoft Teams"
 EXPECTED_APP_PATH="/Applications/Microsoft Teams.app"
@@ -182,6 +188,10 @@ GetLoggedInUser() {
 SetHomeFolder() {
   local target_user="$1"
 
+  # HOME holds the console user's home for the path lists, but root's child processes must
+  # not inherit it (curl, for example, would read that user's ~/.curlrc), so it stays
+  # unexported. runAsUser gives user-context commands their own HOME through sudo -H.
+  typeset -g +x HOME
   LoggedInUserID=""
   if [[ -z "$target_user" ]]; then
     HOME="/var/empty"
@@ -225,7 +235,9 @@ download_source_to_path() {
   local source="$1"
   local destination="$2"
 
+  # --disable must stay first: it stops curl from reading any .curlrc.
   /usr/bin/curl \
+    --disable \
     --fail \
     --silent \
     --show-error \
@@ -292,22 +304,54 @@ bootoutJob() {
 
 remove_path() {
   local target="$1"
+  local physical_target physical_parent component component_path="" zf_output
+  local -i linked=0 zf_status
 
   [[ -n "$target" ]] || return 0
   [[ -e "$target" || -L "$target" ]] || return 0
 
-  if [[ "$target" != /?* ]]; then
+  if [[ "$target" != /?* || "$target" == */ || "${target:t}" == "." || "${target:t}" == ".." ]]; then
     warn "Refusing to remove unsafe path: $target"
     (( CLEANUP_FAILURES++ ))
     return 1
   fi
-
-  if /bin/rm -rf -- "$target" >/dev/null 2>&1; then
+  # Each user owns the folders in their home and temp folder and could replace one with a
+  # symbolic link (for example ~/Library/Containers -> another user's Library/Containers) to
+  # make root delete data elsewhere. zsh's own rm in paranoid mode (zf_rm -s) refuses a link
+  # in any folder above or below the target and checks each folder it enters, so a link
+  # swapped in while it runs is refused too. macOS's /var, /tmp and /etc links are resolved
+  # first, as zf_rm -s would refuse them.
+  if ! zmodload -F zsh/files b:zf_rm 2>/dev/null; then
+    warn "Failed to remove $target: zsh's files module is unavailable"
+    (( CLEANUP_FAILURES++ ))
+    return 1
+  fi
+  physical_target="$target"
+  case "$physical_target" in
+    /var/*|/tmp/*|/etc/*) physical_target="/private${physical_target}" ;;
+  esac
+  # zf_rm asks before deleting a locked or read-only file; with no answer it keeps the file
+  # and still succeeds, so its question counts as a failure.
+  zf_output="$( ( zf_rm -rs -- "$physical_target" ) </dev/null 2>&1 )"
+  zf_status=$?
+  if (( zf_status == 0 )) && [[ "$zf_output" != *"overriding mode"* ]]; then
     log "Removed $target"
+    return 0
+  fi
+  physical_parent="${physical_target:h}"
+  for component in ${(s:/:)physical_parent}; do
+    component_path+="/${component}"
+    [[ -L "$component_path" ]] && linked=1
+  done
+  if (( linked )); then
+    warn "Refusing to remove $target: a folder in its path is a symbolic link"
+  elif [[ "$zf_output" == *"overriding mode"* ]]; then
+    warn "Failed to remove $target: it holds a locked or read-only file"
   else
     warn "Failed to remove $target"
-    (( CLEANUP_FAILURES++ ))
   fi
+  (( CLEANUP_FAILURES++ ))
+  return 1
 }
 
 home_cleanup_allowed() { # $1: home folder; true only for an existing user home under /Users

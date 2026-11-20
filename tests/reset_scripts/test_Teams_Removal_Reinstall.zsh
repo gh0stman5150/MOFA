@@ -97,10 +97,10 @@ t_assert_no_system_calls() { # $1: message
 	fi
 }
 
-t_rm_targets() { # prints the last argument of every recorded /bin/rm call
+t_rm_targets() { # prints the last argument of every recorded removal
 	local line
 	local -a words
-	for line in "${(@f)$(mofa_calls /bin/rm)}"; do
+	for line in "${(@f)$(mofa_removal_calls)}"; do
 		[[ -n "$line" ]] || continue
 		words=("${(@Q)${(z)line}}")
 		print -r -- "${words[-1]}"
@@ -432,7 +432,7 @@ mofa_assert_eq "t_cleanup_probe" "${t_calls[-1]}" "the EXIT trap still runs"
 t_case "main refuses to run without root"
 mofa_run t_main_unprivileged / computer alice MODE=reset
 mofa_assert_status 1 "main exits 1 when not root"
-mofa_assert_contains "$MOFA_STDOUT" "Beginning Microsoft Teams reset (script version: 1.2.0)." "the start banner precedes the root check"
+mofa_assert_contains "$MOFA_STDOUT" "Beginning Microsoft Teams reset (script version: 1.3.0)." "the start banner precedes the root check"
 mofa_assert_contains "$MOFA_STDOUT" "ERROR: This script must be run as root." "root check message"
 t_assert_no_system_calls "nothing runs before the root check"
 mofa_run t_main_unprivileged / computer alice MODE=bogus
@@ -525,7 +525,7 @@ for console in "  Name : root" "  Name : _mbsetupuser" "  Name : loginwindow" ""
 	mofa_assert_contains "$MOFA_STDOUT" "Console user: none; Home Folder: /var/empty; Mode: reset" "console '${console}' gives HOME=/var/empty"
 	mofa_assert_contains "$MOFA_STDOUT" "A valid logged-in user with a /Users home is required for MODE=reset; no changes were made." "console '${console}' is refused"
 	mofa_assert_not_called /usr/bin/dscl "console '${console}' looks up no home"
-	mofa_assert_not_called /bin/rm "console '${console}' removes nothing"
+	mofa_assert_nothing_removed "console '${console}' removes nothing"
 	mofa_assert_not_called /usr/bin/pkill "console '${console}' stops nothing"
 done
 
@@ -539,7 +539,7 @@ mofa_assert_status 1 "a home outside /Users exits 1"
 mofa_assert_contains "$MOFA_STDOUT" "Console user: alice; Home Folder: /private/var/x; Mode: reset" "the directory home is reported"
 mofa_assert_contains "$MOFA_STDOUT" "A valid logged-in user with a /Users home is required for MODE=reset; no changes were made." "the refusal is logged"
 mofa_assert_called /usr/bin/dscl . -read /Users/alice NFSHomeDirectory
-mofa_assert_not_called /bin/rm "nothing is removed"
+mofa_assert_nothing_removed "nothing is removed"
 mofa_assert_not_called /usr/bin/pkill "Teams keeps running"
 mofa_assert_not_called /bin/launchctl "nothing runs as the user"
 
@@ -559,21 +559,21 @@ mofa_assert_status 0 "an empty target is skipped"
 mofa_capture remove_path "$T_DIR/missing"
 mofa_assert_status 0 "a missing target is skipped"
 mofa_assert_eq 0 "$CLEANUP_FAILURES" "skipped targets are not failures"
-mofa_assert_not_called /bin/rm "rm never runs for an unsafe or missing target"
+mofa_assert_nothing_removed "rm never runs for an unsafe or missing target"
 
-t_case "remove_path calls rm with -- and the exact path, and counts failures"
+t_case "remove_path removes with zsh's paranoid rm (zf_rm -rs) and the full path, and counts failures"
 target="$T_HOME/Library/Group Containers/UBF8T346G9.com.microsoft.teams"
 mofa_mkdir "$target"
 mofa_capture remove_path "$target"
 mofa_assert_status 0 "remove_path succeeds"
-mofa_assert_called /bin/rm -rf -- "$target"
+mofa_assert_removed -rf "$target"
 mofa_assert_contains "$MOFA_STDOUT" "Removed ${target}" "the removal is logged"
 mofa_assert_eq 0 "$CLEANUP_FAILURES" "no failure counted"
 [[ -d "$target" ]] && mofa_pass "the stub did not delete anything" || mofa_fail "the stub did not delete anything"
 t_symlink "$T_DIR/missing-target" "$T_DIR/dangling"
 mofa_capture remove_path "$T_DIR/dangling"
-mofa_assert_called /bin/rm -rf -- "$T_DIR/dangling"
-mofa_stub /bin/rm 1
+mofa_assert_removed -rf "$T_DIR/dangling"
+mofa_stub_removals 1
 mofa_capture remove_path "$target"
 mofa_assert_eq 1 "$CLEANUP_FAILURES" "a failed rm is counted"
 mofa_assert_contains "$MOFA_STDOUT" "WARN: Failed to remove ${target}" "a failed rm is logged"
@@ -589,16 +589,16 @@ mofa_reset_calls
 TEMP_DIR=""
 BACKGROUND_BACKUP_DIR="$T_DIR/missing"
 mofa_capture cleanup
-mofa_assert_not_called /bin/rm "unset or missing folders are not removed"
+mofa_assert_nothing_removed "unset or missing folders are not removed"
 
 # --- Per-user cleanup -----------------------------------------------------------------
 t_case "cleanup_user_paths removes the listed Teams data and nothing else"
 t_make_teams_data "$T_HOME"
 mofa_capture cleanup_user_paths alice "$T_HOME"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Containers/com.microsoft.teams2"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Caches/com.microsoft.teams2"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Preferences/com.microsoft.teams2.plist"
-mofa_assert_eq 3 "$(mofa_call_count /bin/rm)" "only existing Teams paths are removed"
+mofa_assert_removed -rf "$T_HOME/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_HOME/Library/Caches/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_HOME/Library/Preferences/com.microsoft.teams2.plist"
+mofa_assert_eq 3 "$(mofa_removal_count)" "only existing Teams paths are removed"
 mofa_assert_not_contains "$(t_rm_targets)" "com.microsoft.Outlook" "other apps' data is kept"
 
 t_case "cleanup_user_paths skips exempt homes"
@@ -607,7 +607,7 @@ for home in "$T_USERS/Shared" "$T_DIR/outside/bob" "/var/empty" "/" "" "$T_USERS
 	mofa_capture cleanup_user_paths someone "$home"
 	mofa_assert_contains "$MOFA_STDOUT" "Skipping cleanup for unsafe or unavailable home path" "home '${home}' is skipped"
 done
-mofa_assert_not_called /bin/rm "nothing is removed from an exempt home"
+mofa_assert_nothing_removed "nothing is removed from an exempt home"
 
 t_case "cleanup_target_users cleans every eligible user and never touches exempt homes"
 t_make_teams_data "$T_HOME"
@@ -631,10 +631,10 @@ mofa_stub_handler /usr/bin/dscl t_fake_dscl
 mofa_stub_passthrough /usr/bin/awk
 mofa_run cleanup_target_users
 mofa_assert_status 0 "cleanup_target_users succeeds"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Containers/com.microsoft.teams2"
-mofa_assert_called /bin/rm -rf -- "$T_USERS/bob/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_HOME/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_USERS/bob/Library/Containers/com.microsoft.teams2"
 t_assert_rm_only_under "rm only touches alice's and bob's homes" "$T_HOME" "$T_USERS/bob"
-mofa_assert_eq 6 "$(mofa_call_count /bin/rm)" "three Teams paths are removed for each of the two users"
+mofa_assert_eq 6 "$(mofa_removal_count)" "three Teams paths are removed for each of the two users"
 for skipped in shared emptyhome outsider dotdot usersroot slashhome "mofa_ghost_$$"; do
 	mofa_assert_contains "$MOFA_STDOUT" "Skipping cleanup for unsafe or unavailable home path: ${skipped} ->" "${skipped} is skipped"
 done
@@ -657,7 +657,7 @@ LoggedInUser=""
 mofa_reset_calls
 mofa_run cleanup_target_users
 mofa_assert_contains "$MOFA_STDOUT" "no user data was removed" "no console user means no user data is removed"
-mofa_assert_not_called /bin/rm "nothing is removed without a console user"
+mofa_assert_nothing_removed "nothing is removed without a console user"
 
 t_case "cleanup_logged_in_user_security_state works in the user's context"
 LoggedInUser=alice
@@ -684,7 +684,7 @@ mofa_stub_handler /bin/launchctl t_fake_launchctl
 for T_USER_TMP in "/tmp/" "/Users/alice" "/" ""; do
 	mofa_capture cleanup_user_temp_paths
 done
-mofa_assert_not_called /bin/rm "no temp folder outside /var/folders is cleaned"
+mofa_assert_nothing_removed "no temp folder outside /var/folders is cleaned"
 mofa_assert_called /bin/launchctl asuser 501 /usr/bin/sudo -H -u alice /usr/bin/getconf DARWIN_USER_TEMP_DIR
 LoggedInUser=""
 mofa_reset_calls
@@ -699,15 +699,15 @@ if [[ "$MOFA_TEST_ROOT" == /private/var/folders/?* ]]; then
 		mofa_reset_calls
 		T_USER_TMP="$reported"
 		mofa_capture cleanup_user_temp_paths
-		mofa_assert_called /bin/rm -rf -- "${reported%/}/com.microsoft.teams2"
-		mofa_assert_called /bin/rm -rf -- "${reported%/}/v8-compile-cache-501"
+		mofa_assert_removed -rf "${reported%/}/com.microsoft.teams2"
+		mofa_assert_removed -rf "${reported%/}/v8-compile-cache-501"
 	done
 	# A failed lookup is not trusted, even when it printed a /var/folders path.
 	mofa_reset_calls
 	mofa_stub /bin/launchctl 1 "$T_DIR/T/"
 	mofa_capture cleanup_user_temp_paths
 	mofa_assert_status 0 "a failed temp folder lookup is not an error"
-	mofa_assert_not_called /bin/rm "a failed temp folder lookup removes nothing"
+	mofa_assert_nothing_removed "a failed temp folder lookup removes nothing"
 else
 	print -r -- "# skip: the sandbox is not under /private/var/folders, so the accepted-path case cannot run"
 fi
@@ -824,12 +824,12 @@ t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_capture download_pkg
 mofa_assert_status 0 "the download succeeds"
 mofa_assert_eq "$T_WORK/MicrosoftTeams.pkg" "$PKG_PATH" "the package is saved in the private folder"
-mofa_assert_called /usr/bin/curl --fail --silent --show-error --location --connect-timeout 30 --retry 5 --retry-delay 10 \
+mofa_assert_called /usr/bin/curl --disable --fail --silent --show-error --location --connect-timeout 30 --retry 5 --retry-delay 10 \
 	--max-time 900 --output "$T_WORK/MicrosoftTeams.pkg" -- "https://go.microsoft.com/fwlink/?linkid=2249065"
 DOWNLOAD_URL_TEAMS="--config=/tmp/mofa_test_curlrc"
 DOWNLOAD_TIMEOUT=60
 mofa_capture download_pkg
-mofa_assert_called /usr/bin/curl --fail --silent --show-error --location --connect-timeout 30 --retry 5 --retry-delay 10 \
+mofa_assert_called /usr/bin/curl --disable --fail --silent --show-error --location --connect-timeout 30 --retry 5 --retry-delay 10 \
 	--max-time 60 --output "$T_WORK/MicrosoftTeams.pkg" -- "--config=/tmp/mofa_test_curlrc"
 
 t_case "download_pkg fails on a curl error, an empty file or no private folder"
@@ -894,7 +894,7 @@ for scenario in download signer gatekeeper macos; do
 	mofa_run run_reinstall
 	mofa_assert_status 1 "a ${scenario} failure exits 1"
 	mofa_assert_not_called /usr/bin/pkill "a ${scenario} failure leaves Teams running"
-	mofa_assert_not_called /bin/rm "a ${scenario} failure removes nothing"
+	mofa_assert_nothing_removed "a ${scenario} failure removes nothing"
 	mofa_assert_not_called /usr/sbin/installer "a ${scenario} failure installs nothing"
 	mofa_assert_not_called /bin/launchctl "a ${scenario} failure does not back up or touch user data"
 done
@@ -909,8 +909,8 @@ mofa_stub /usr/sbin/installer 1
 mofa_capture install_teams
 mofa_assert_status 1 "every attempt failing returns 1"
 mofa_assert_eq 2 "$(mofa_call_count /usr/sbin/installer)" "the installer is retried"
-mofa_assert_eq 2 "$(mofa_call_count /bin/rm)" "the app is removed after each failed attempt"
-mofa_assert_called /bin/rm -rf -- "$T_APP"
+mofa_assert_eq 2 "$(mofa_removal_count)" "the app is removed after each failed attempt"
+mofa_assert_removed -rf "$T_APP"
 mofa_assert_contains "$MOFA_STDOUT" "installer returned a non-zero status on attempt 2" "the failure is logged"
 mofa_reset_calls
 INSTALLATION_RETRIES=1
@@ -950,15 +950,15 @@ mofa_write_file "$T_BG/custom.png" "png"
 t_setup_console_user
 mofa_run t_main_flow / computer alice MODE=reset
 mofa_assert_status 0 "the reset flow exits 0"
-mofa_assert_contains "$MOFA_STDOUT" "Beginning Microsoft Teams reset (script version: 1.2.0)." "the start banner is logged"
+mofa_assert_contains "$MOFA_STDOUT" "Beginning Microsoft Teams reset (script version: 1.3.0)." "the start banner is logged"
 mofa_assert_contains "$MOFA_STDOUT" "Console user: alice; Home Folder: ${T_HOME}; Mode: reset; Clean all users: true" "the run context is logged"
 mofa_assert_called /usr/bin/pkill -9 "Microsoft Teams"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Containers/com.microsoft.teams2"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
+mofa_assert_removed -rf "$T_HOME/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_HOME/Library/Group Containers/UBF8T346G9.com.microsoft.oneauth"
 mofa_assert_called /bin/launchctl asuser 501 /usr/bin/sudo -H -u alice /usr/bin/ditto "$T_BG" "$T_STAGE/Backgrounds"
 mofa_assert_called /bin/launchctl asuser 501 /usr/bin/sudo -H -u alice /usr/bin/ditto "$T_STAGE/Backgrounds" "$T_HOME/Teams_Backgrounds_Backup"
 mofa_assert_called_before /bin/launchctl /usr/bin/pkill "backgrounds are staged before Teams is stopped"
-mofa_assert_called_before /usr/bin/pkill /bin/rm "Teams is stopped before its data is removed"
+mofa_assert_called_before /usr/bin/pkill zf_rm "Teams is stopped before its data is removed"
 t_assert_no_rm_under "the installed app is kept" "/Applications/Microsoft Teams.app" "$T_APP"
 mofa_assert_not_contains "$(t_rm_targets)" "com.microsoft.Outlook" "other apps' data is kept"
 mofa_assert_not_called /usr/bin/curl "reset mode downloads nothing"
@@ -974,7 +974,7 @@ t_case "main reset flow exits 1 when a removal fails"
 mofa_mkdir "$T_APP"
 t_make_teams_data "$T_HOME"
 t_setup_console_user
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 mofa_run t_main_flow / computer alice MODE=reset
 mofa_assert_status 1 "a removal failure is reported to Jamf"
 mofa_assert_contains "$MOFA_STDOUT" "cleanup failure(s)" "the failure count is logged"
@@ -987,7 +987,7 @@ t_setup_download "$T_SIGNED_BY_MICROSOFT"
 mofa_stub /usr/bin/curl 22
 mofa_run t_main_flow / computer alice
 mofa_assert_status 1 "a failed download exits 1"
-mofa_assert_not_called /bin/rm "nothing is removed"
+mofa_assert_nothing_removed "nothing is removed"
 mofa_assert_not_called /usr/bin/pkill "Teams keeps running"
 mofa_assert_not_called /usr/sbin/installer "nothing is installed"
 mofa_assert_called_before /usr/bin/curl t_cleanup_probe "the EXIT trap cleans up after a failure exit"
@@ -1007,14 +1007,14 @@ mofa_run t_main_flow / computer alice "" MODE=reinstall
 mofa_assert_status 0 "a successful reinstall exits 0"
 mofa_assert_contains "$MOFA_STDOUT" "Console user: alice; Home Folder: ${T_HOME}; Mode: reinstall; Clean all users: true" "the run context is logged"
 mofa_assert_called /usr/sbin/spctl -a -t install "$T_WORK/MicrosoftTeams.pkg"
-mofa_assert_called /bin/rm -rf -- "$T_HOME/Library/Containers/com.microsoft.teams2"
-mofa_assert_called /bin/rm -rf -- "$T_USERS/bob/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_HOME/Library/Containers/com.microsoft.teams2"
+mofa_assert_removed -rf "$T_USERS/bob/Library/Containers/com.microsoft.teams2"
 t_assert_no_rm_under "the shared home is never cleaned" "$T_USERS/Shared"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/MicrosoftTeams.pkg" -target /
 mofa_assert_called_before /usr/sbin/spctl /usr/bin/pkill "the package is verified before Teams is stopped"
-mofa_assert_called_before /usr/sbin/spctl /bin/rm "the package is verified before anything is removed"
-mofa_assert_called_before /usr/bin/pkill /bin/rm "Teams is stopped before its data is removed"
-mofa_assert_called_before /bin/rm /usr/sbin/installer "old data is removed before installing"
+mofa_assert_called_before /usr/sbin/spctl zf_rm "the package is verified before anything is removed"
+mofa_assert_called_before /usr/bin/pkill zf_rm "Teams is stopped before its data is removed"
+mofa_assert_called_before zf_rm /usr/sbin/installer "old data is removed before installing"
 mofa_assert_not_called /usr/bin/ditto "nothing is copied as root"
 mofa_assert_contains "$MOFA_STDOUT" "Microsoft Teams removal and reinstall completed." "completion is logged"
 t_calls=("${(@f)$(mofa_calls)}")
@@ -1028,7 +1028,7 @@ t_setup_console_user
 t_setup_download "$T_SIGNED_BY_MICROSOFT"
 t_setup_healthy_app
 mofa_stub_handler /usr/bin/dscl t_fake_dscl
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 mofa_run t_main_flow / computer alice MODE=reinstall
 mofa_assert_status 1 "a removal failure is reported to Jamf"
 mofa_assert_called /usr/sbin/installer -pkg "$T_WORK/MicrosoftTeams.pkg" -target /
@@ -1036,5 +1036,102 @@ mofa_assert_contains "$MOFA_STDOUT" "WARN: Failed to remove ${T_HOME}/Library/Co
 # No exact count: cleanup_system_paths checks literal /Applications and /Library paths on this Mac.
 mofa_assert_contains "$MOFA_STDOUT" "ERROR: Microsoft Teams reinstall completed with" "the failure count is logged"
 mofa_assert_contains "$MOFA_STDOUT" "cleanup failure(s)." "the failure is reported as a cleanup failure"
+
+# --- 1.3.0: root never follows a link planted above or below a removal target ----------
+# The cases marked "real zf_rm" run zsh's own rm (a builtin, not a stub) on fixtures, and only
+# inside the kernel sandbox, which confines every write to this test's folder.
+t_case "remove_path refuses unsafe target spellings"
+mofa_mkdir "$T_DIR/spelled"
+for bad in "$T_DIR/spelled/" "$T_DIR/spelled/." "$T_DIR/spelled/.."; do
+	CLEANUP_FAILURES=0
+	mofa_capture remove_path "$bad"
+	mofa_assert_status 1 "remove_path refuses '${bad}'"
+	mofa_assert_eq 1 "$CLEANUP_FAILURES" "refusing '${bad}' counts as a cleanup failure"
+done
+mofa_assert_nothing_removed "nothing is removed for an unsafe spelling"
+
+t_case "remove_path maps macOS's own /var and /tmp links to /private"
+if [[ "$T_DIR" == /private/(var|tmp)/* ]]; then
+	mofa_mkdir "$T_DIR/system_link/com.microsoft.teams2"
+	mofa_capture remove_path "${T_DIR#/private}/system_link/com.microsoft.teams2"
+	mofa_assert_status 0 "remove_path accepts a path through macOS's own link"
+	mofa_assert_called zf_rm -rs -- "$T_DIR/system_link/com.microsoft.teams2"
+else
+	mofa_pass "skipped: the sandbox is not under /private/var or /private/tmp"
+fi
+
+t_case "remove_path reports a locked file instead of letting zf_rm skip it"
+mofa_write_file "$T_DIR/locked/com.microsoft.teams2.plist" "x"
+mofa_stub zf_rm 0 "zf_rm: remove \`$T_DIR/locked/com.microsoft.teams2.plist', overriding mode 0444? "
+mofa_capture remove_path "$T_DIR/locked/com.microsoft.teams2.plist"
+mofa_assert_status 1 "remove_path fails when zf_rm asks to override a locked file"
+mofa_assert_eq 1 "$CLEANUP_FAILURES" "the locked file counts as a cleanup failure"
+mofa_assert_contains "$MOFA_STDOUT" \
+	"WARN: Failed to remove $T_DIR/locked/com.microsoft.teams2.plist: it holds a locked or read-only file" \
+	"the reason is logged"
+
+t_case "remove_path fails closed when zsh's files module is unavailable"
+mofa_mkdir "$T_DIR/no_module/com.microsoft.teams2"
+mofa_stub zmodload 1
+mofa_capture remove_path "$T_DIR/no_module/com.microsoft.teams2"
+unfunction zmodload
+mofa_assert_status 1 "remove_path fails without zf_rm"
+mofa_assert_contains "$MOFA_STDOUT" "zsh's files module is unavailable" "the reason is logged"
+mofa_assert_nothing_removed "nothing falls back to /bin/rm"
+
+if (( MOFA_KERNEL_SANDBOX )); then
+	t_case "remove_path refuses a target below a symbolically linked folder (real zf_rm)"
+	mofa_mkdir "$T_DIR/other_user/Containers/com.microsoft.teams2" "$T_HOME/Library"
+	mofa_write_file "$T_DIR/other_user/Containers/com.microsoft.teams2/keep" "other user's data"
+	t_symlink "$T_DIR/other_user/Containers" "$T_HOME/Library/Containers"
+	unfunction zf_rm
+	mofa_capture remove_path "$T_HOME/Library/Containers/com.microsoft.teams2"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "remove_path refuses a target reached through a planted link"
+	mofa_assert_eq 1 "$CLEANUP_FAILURES" "the refusal counts as a cleanup failure"
+	mofa_assert_contains "$MOFA_STDOUT" \
+		"WARN: Refusing to remove $T_HOME/Library/Containers/com.microsoft.teams2: a folder in its path is a symbolic link" \
+		"the refusal is logged"
+	[[ -e "$T_DIR/other_user/Containers/com.microsoft.teams2/keep" ]] \
+		&& mofa_pass "the other user's data is kept" || mofa_fail "the other user's data is kept"
+
+	t_case "remove_path removes a folder but not what a link inside it points to (real zf_rm)"
+	mofa_mkdir "$T_DIR/target/inner" "$T_DIR/other_user"
+	mofa_write_file "$T_DIR/other_user/keep" "other user's data"
+	t_symlink "$T_DIR/other_user" "$T_DIR/target/inner/link"
+	unfunction zf_rm
+	mofa_capture remove_path "$T_DIR/target"
+	mofa_stub zf_rm
+	mofa_assert_status 0 "remove_path removes the folder"
+	[[ ! -e "$T_DIR/target" ]] && mofa_pass "the folder is gone" || mofa_fail "the folder is gone"
+	[[ -e "$T_DIR/other_user/keep" ]] \
+		&& mofa_pass "the link's target is kept" || mofa_fail "the link's target is kept"
+
+	t_case "remove_path reports a read-only file that zf_rm keeps unasked (real zf_rm)"
+	mofa_mkdir "$T_DIR/readonly"
+	( umask 0277; print -r -- x >| "$T_DIR/readonly/com.microsoft.teams2.plist" )
+	unfunction zf_rm
+	mofa_capture remove_path "$T_DIR/readonly/com.microsoft.teams2.plist"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "remove_path fails for a file zf_rm will not delete unasked"
+	mofa_assert_contains "$MOFA_STDOUT" "it holds a locked or read-only file" "the reason is logged"
+	[[ -e "$T_DIR/readonly/com.microsoft.teams2.plist" ]] && mofa_pass "the file is kept" || mofa_fail "the file is kept"
+else
+	mofa_pass "skipped: the real zf_rm cases need the kernel sandbox"
+fi
+
+t_case "SetHomeFolder keeps HOME out of root's child processes"
+mofa_assert_contains "${(t)HOME}" export "the harness exports HOME before the call"
+mofa_capture SetHomeFolder ""
+mofa_assert_not_contains "${(t)HOME}" export "without a console user, HOME is no longer exported"
+if [[ -d /Users/Shared ]]; then
+	export HOME
+	mofa_stub /usr/bin/dscl 0 "NFSHomeDirectory: /Users/Shared"
+	mofa_stub_passthrough /usr/bin/awk
+	mofa_stub /usr/bin/id 0 "501"
+	mofa_capture SetHomeFolder mofatestuser
+	mofa_assert_eq "/Users/Shared" "$HOME" "SetHomeFolder points HOME at the user's home"
+	mofa_assert_not_contains "${(t)HOME}" export "with a console user, HOME is no longer exported"
+fi
 
 mofa_finish

@@ -32,6 +32,15 @@ behavior. Use Self Service or login context for these operations.
   nonzero exits for download, cleanup and installation failures.
 - Reset/removal can delete user state or credentials. Preserve target/path
   safeguards and validate changes on a disposable managed Mac with recovery.
+- Users control their home and temp folders, so root must not follow links
+  planted there. Remove user paths only through removeTarget (Teams:
+  remove_path), which deletes with zsh's zf_rm -s: it refuses links above and
+  below the target, even ones swapped in mid-removal. tests/test_shell_safety.py
+  allowlists every rm and zf_rm call. MoveIfPresent and OneDrive's keychain-2.db
+  edit do not have this protection yet.
+- Never hand the console user's home to root's child processes. SetHomeFolder
+  keeps HOME unexported (typeset -g +x HOME), and every curl call passes -q
+  (--disable) first so that user's ~/.curlrc is never read.
 - Repair/reinstall can keep the policy active until installation completes.
   Do not describe these scripts as background-only operations.
 - Keep Teams removal/reinstall's dedicated log and other scripts' Jamf policy
@@ -52,6 +61,15 @@ done
 ```
 
 Run repository-level pytest as described in the parent guide, including its
-shell-safety tests. Update script comments and this directory's README when
+shell-safety tests. From the repository root, as an unprivileged user (never
+as root), run the sandboxed behavioral tests; they stub every destructive
+command, including zsh's zf_rm, which the removal helpers use. Check removals
+with mofa_assert_removed, mofa_removal_calls and mofa_assert_nothing_removed:
+
+```bash
+/bin/zsh --no-rcs tests/reset_scripts/run_all.zsh
+```
+
+Update script comments and this directory's README when
 modes, logging or dependency behavior changes. Syntax and static tests do not
 replace live Jamf validation, and ShellCheck is not a Zsh validator.

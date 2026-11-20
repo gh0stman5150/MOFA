@@ -3,7 +3,7 @@
 # Run as an unprivileged user: zsh tests/reset_scripts/test_Office_Removal.zsh (or run_all.zsh).
 # Every system command is a recording stub (see harness.zsh); nothing outside the sandbox changes.
 # The script removes fixed system paths (/Applications, /Library, /var/root, /Users/Shared). The
-# tests only look at those paths with [[ -e ]]: /bin/rm and /bin/launchctl are stubs, so a path that
+# tests only look at those paths with [[ -e ]]: /bin/rm, zf_rm and /bin/launchctl are stubs, so a path that
 # exists on this Mac produces a recorded call and nothing more. Exact rm assertions use sandbox
 # fixtures under the console user's (sandbox) home, so results do not depend on what is installed.
 
@@ -169,9 +169,9 @@ t_assert_rm_only_documented() {
 	local t_line t_entry
 	local -a t_allowed t_unexpected
 	for t_entry in "${(@f)$(t_expected_targets "$1")}"; do
-		t_allowed+=("$(t_fmt /bin/rm "${t_entry%% *}" -- "${t_entry#* }")")
+		t_allowed+=("$(t_fmt zf_rm "${${t_entry%% *}//f/}s" -- "${t_entry#* }")")
 	done
-	for t_line in "${(@f)$(t_lines "$(mofa_calls /bin/rm)")}"; do
+	for t_line in "${(@f)$(t_lines "$(mofa_removal_calls)")}"; do
 		[[ -z "$t_line" ]] && continue
 		(( ${t_allowed[(Ie)$t_line]} )) || t_unexpected+=("$t_line")
 	done
@@ -180,7 +180,7 @@ t_assert_rm_only_documented() {
 
 t_sandbox_rm_calls() { # prints the recorded rm calls whose target is inside the sandbox
 	local t_line
-	for t_line in "${(@f)$(mofa_calls /bin/rm)}"; do
+	for t_line in "${(@f)$(mofa_removal_calls)}"; do
 		[[ -n "$t_line" && "$t_line" == *"$MOFA_TEST_ROOT"* ]] && print -r -- "$t_line"
 	done
 	return 0
@@ -225,11 +225,11 @@ t_setup_user_fixtures() { # sandbox Office data for alice, plus files that must 
 }
 
 t_expected_sandbox_rm() { # the rm calls t_setup_user_fixtures should produce, in order
-	t_fmt /bin/rm -rf -- "$T_HOME/Library/Application Support/Microsoft"
-	t_fmt /bin/rm -f -- "$T_HOME/Library/Preferences/com.microsoft.Word.plist"
-	t_fmt /bin/rm -f -- "$T_HOME/Library/Preferences/com.microsoft.teams2.plist"
-	t_fmt /bin/rm -rf -- "$T_HOME/Library/Group Containers/UBF8T346G9.Office"
-	t_fmt /bin/rm -f -- "$T_HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies"
+	t_fmt zf_rm -rs -- "$T_HOME/Library/Application Support/Microsoft"
+	t_fmt zf_rm -s -- "$T_HOME/Library/Preferences/com.microsoft.Word.plist"
+	t_fmt zf_rm -s -- "$T_HOME/Library/Preferences/com.microsoft.teams2.plist"
+	t_fmt zf_rm -rs -- "$T_HOME/Library/Group Containers/UBF8T346G9.Office"
+	t_fmt zf_rm -s -- "$T_HOME/Library/Cookies/com.microsoft.OneDrive.binarycookies"
 }
 
 # --- Root check ---------------------------------------------------------------------
@@ -343,7 +343,7 @@ for bad in "" "relative/path" "." "Library/Preferences" "/"; do
 	mofa_assert_eq 1 "$REMOVAL_FAILURES" "refusing '${bad}' counts as a removal failure"
 	mofa_assert_contains "$MOFA_STDERR" "Refusing to remove unsafe path" "refusing '${bad}' is logged"
 done
-mofa_assert_not_called /bin/rm "rm never runs for an unsafe target"
+mofa_assert_nothing_removed "rm never runs for an unsafe target"
 
 mofa_case "removePathList and removeFileList call rm with the option, -- and the exact path"
 t_reset_globals
@@ -351,15 +351,15 @@ target="$T_HOME/Library/Group Containers/UBF8T346G9.Office"
 mofa_mkdir "$target"
 mofa_capture removePathList "$target"
 mofa_assert_status 0 "removePathList succeeds"
-mofa_assert_called /bin/rm -rf -- "$target"
-mofa_assert_eq 1 "$(mofa_call_count /bin/rm)" "rm runs once"
+mofa_assert_removed -rf "$target"
+mofa_assert_eq 1 "$(mofa_removal_count)" "rm runs once"
 mofa_assert_eq 0 "$REMOVAL_FAILURES" "no failure counted"
 [[ -d "$target" ]] && mofa_pass "the stub did not delete anything" || mofa_fail "the stub did not delete anything"
 plist="$T_HOME/Library/Preferences/com.microsoft.Word.plist"
 mofa_write_file "$plist" "x"
 mofa_reset_calls
 mofa_capture removeFileList "$plist"
-mofa_assert_eq "$(t_fmt /bin/rm -f -- "$plist")" "$(mofa_calls /bin/rm)" "removeFileList uses rm -f"
+mofa_assert_eq "$(t_fmt zf_rm -s -- "$plist")" "$(mofa_removal_calls)" "removeFileList uses rm -f"
 
 mofa_case "removeTarget counts rm failures, keeps going and skips missing paths"
 t_reset_globals
@@ -367,10 +367,10 @@ first="$T_HOME/Library/Preferences/com.microsoft.Word.plist"
 second="$T_HOME/Library/Preferences/com.microsoft.Excel.plist"
 mofa_write_file "$first" "x"
 mofa_write_file "$second" "x"
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 mofa_capture removeFileList "$first" "$second"
 mofa_assert_eq 2 "$REMOVAL_FAILURES" "each failed rm is counted"
-mofa_assert_eq 2 "$(mofa_call_count /bin/rm)" "a failed removal does not stop the next one"
+mofa_assert_eq 2 "$(mofa_removal_count)" "a failed removal does not stop the next one"
 mofa_assert_contains "$MOFA_STDERR" "Failed to remove ${first}" "a failed rm is logged"
 mofa_reset_calls
 REMOVAL_FAILURES=0
@@ -378,7 +378,7 @@ mofa_capture removeTarget -rf "$T_HOME/Library/Caches/missing"
 mofa_assert_status 0 "a missing path is not an error"
 mofa_assert_eq 0 "$REMOVAL_FAILURES" "a missing path is not counted"
 mofa_assert_contains "$MOFA_STDOUT" "Skipping missing path" "a missing path is logged"
-mofa_assert_not_called /bin/rm "rm does not run for a missing path"
+mofa_assert_nothing_removed "rm does not run for a missing path"
 
 # --- Package receipts ---------------------------------------------------------------
 mofa_case "forgetReceiptList forgets only receipts that match exactly"
@@ -481,7 +481,7 @@ done
 t_expected+=("$(t_fmt /usr/bin/pkill -9 -f com.microsoft.autoupdate.helper)")
 t_expected+=("$(t_fmt /usr/bin/pkill -9 -f com.microsoft.autoupdate.bootstrapper.helper)")
 mofa_assert_eq "${(F)t_expected}" "$(mofa_calls /usr/bin/pkill)" "every Office, OneDrive, Teams and AutoUpdate process is stopped"
-mofa_assert_called_before /usr/bin/pkill /bin/rm "processes are stopped before data is removed"
+mofa_assert_called_before /usr/bin/pkill zf_rm "processes are stopped before data is removed"
 # launchd: items present on this Mac are booted out (stubbed); missing ones are logged and skipped.
 for t_entry in "${T_LAUNCHD_ITEMS[@]}"; do
 	t_domain="${t_entry%% *}"
@@ -512,9 +512,9 @@ mofa_assert_eq "" "${(F)t_unexpected}" "launchctl only boots out the documented 
 mofa_assert_eq "$(t_expected_targets "$T_HOME")" "$(t_recorded_targets)" "main removes exactly the documented targets, in order"
 t_assert_rm_only_documented "$T_HOME"
 mofa_assert_eq "$(t_expected_sandbox_rm)" "$(t_sandbox_rm_calls)" "the console user's Office data is removed with the documented options"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "com.apple.finder.plist" "other preferences are kept"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "UBF8T346G9.OneDriveStandaloneSuite" "other group containers are kept"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "Documents" "documents are kept"
+mofa_assert_not_contains "$(mofa_removal_calls)" "com.apple.finder.plist" "other preferences are kept"
+mofa_assert_not_contains "$(mofa_removal_calls)" "UBF8T346G9.OneDriveStandaloneSuite" "other group containers are kept"
+mofa_assert_not_contains "$(mofa_removal_calls)" "Documents" "documents are kept"
 # Receipts: only installed receipts are forgotten, after the apps are removed.
 t_expected=(
 	"$(t_fmt /usr/sbin/pkgutil --forget com.microsoft.Word)"
@@ -528,7 +528,7 @@ for t_line in "${(@f)$(mofa_calls /usr/sbin/pkgutil)}"; do
 done
 mofa_assert_eq 24 "$t_pkgs_checks" "each of the 24 documented receipts is looked up"
 mofa_assert_eq 27 "$(mofa_call_count /usr/sbin/pkgutil)" "24 lookups and 3 forgets, nothing else"
-mofa_assert_called_before /bin/rm /usr/sbin/pkgutil "receipts are forgotten after the apps are removed"
+mofa_assert_called_before zf_rm /usr/sbin/pkgutil "receipts are forgotten after the apps are removed"
 # Section order matches the script.
 t_out="$MOFA_STDOUT"
 t_a="${t_out%%Office-Reset: Stopping services*}"
@@ -549,7 +549,7 @@ mofa_stub /usr/sbin/scutil 0 "  Name : alice"
 mofa_stub_passthrough /usr/bin/awk
 mofa_stub_passthrough /usr/bin/grep
 mofa_stub_handler /usr/sbin/pkgutil t_fake_pkgutil
-mofa_stub /bin/rm 1
+mofa_stub_removals 1
 T_RECEIPTS=(com.microsoft.Word)
 mofa_run t_main_flow / computer alice
 mofa_assert_status 1 "a removal failure exits 1"
@@ -572,7 +572,7 @@ mofa_assert_not_called /usr/bin/dscl "no directory lookup without a console user
 mofa_assert_not_called /usr/bin/id "no user ID without a console user"
 mofa_assert_eq "$(t_expected_targets /var/empty)" "$(t_recorded_targets)" "user paths resolve under /var/empty"
 mofa_assert_not_contains "$(mofa_calls /bin/launchctl)" "gui/" "no gui domain is touched"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "/var/empty" "nothing under /var/empty is removed"
+mofa_assert_not_contains "$(mofa_removal_calls)" "/var/empty" "nothing under /var/empty is removed"
 t_assert_rm_only_documented /var/empty
 
 mofa_case "main with a console user whose home is outside /Users removes no user data"
@@ -587,7 +587,7 @@ mofa_assert_status 0 "the flow continues without user data"
 mofa_assert_contains "$MOFA_STDERR" "Home folder for alice is not under /Users" "the refused home is logged"
 mofa_assert_contains "$MOFA_STDOUT" "Running as: <none>; Home Folder: /var/empty" "the user is dropped"
 mofa_assert_eq "$(t_expected_targets /var/empty)" "$(t_recorded_targets)" "user paths resolve under /var/empty"
-mofa_assert_not_contains "$(mofa_calls /bin/rm)" "/private/var/mofa_test_home" "the refused home is never removed from"
+mofa_assert_not_contains "$(mofa_removal_calls)" "/private/var/mofa_test_home" "the refused home is never removed from"
 mofa_assert_not_contains "$(mofa_calls /bin/launchctl)" "gui/" "no gui domain is touched"
 mofa_assert_not_called /usr/bin/id "no user ID for a refused home"
 
@@ -612,6 +612,117 @@ if [[ "$T_HOME" != /Users/* ]]; then
 	t_assert_rm_only_documented /var/empty
 else
 	print -r -- "# skip: the sandbox is under /Users (TMPDIR=${TMPDIR}), so it cannot stand in for a home outside /Users"
+fi
+
+# --- 1.3.0: root never follows a link planted above or below a removal target ----------
+# The cases marked "real zf_rm" run zsh's own rm (a builtin, not a stub) on fixtures, and only
+# inside the kernel sandbox, which confines every write to this test's folder.
+t_link_fixture() { # $1: link target, $2: link path inside the sandbox
+	if [[ "${2:a}" != "$MOFA_TEST_ROOT"/?* ]]; then
+		mofa_fail "t_link_fixture refused a link outside the sandbox: $2"
+		return 1
+	fi
+	command /bin/ln -s -- "$1" "$2"
+}
+
+mofa_case "removeTarget refuses unsafe target spellings"
+mofa_mkdir "$MOFA_TEST_ROOT/spelled"
+for bad in "$MOFA_TEST_ROOT/spelled/" "$MOFA_TEST_ROOT/spelled/." "$MOFA_TEST_ROOT/spelled/.."; do
+	REMOVAL_FAILURES=0
+	mofa_capture removeTarget -rf "$bad"
+	mofa_assert_status 1 "removeTarget refuses '${bad}'"
+	mofa_assert_eq 1 "$REMOVAL_FAILURES" "refusing '${bad}' counts as a removal failure"
+done
+mofa_assert_nothing_removed "nothing is removed for an unsafe spelling"
+
+mofa_case "removeTarget maps macOS's own /var and /tmp links to /private"
+REMOVAL_FAILURES=0
+if [[ "$MOFA_TEST_ROOT" == /private/(var|tmp)/* ]]; then
+	mofa_mkdir "$MOFA_TEST_ROOT/system_link/com.microsoft.App"
+	mofa_capture removeTarget -rf "${MOFA_TEST_ROOT#/private}/system_link/com.microsoft.App"
+	mofa_assert_status 0 "removeTarget accepts a path through macOS's own link"
+	mofa_assert_called zf_rm -rs -- "$MOFA_TEST_ROOT/system_link/com.microsoft.App"
+else
+	mofa_pass "skipped: the sandbox is not under /private/var or /private/tmp"
+fi
+
+mofa_case "removeTarget reports a locked file instead of letting zf_rm skip it"
+REMOVAL_FAILURES=0
+mofa_write_file "$MOFA_TEST_ROOT/locked/file.plist" "x"
+mofa_stub zf_rm 0 "zf_rm: remove \`$MOFA_TEST_ROOT/locked/file.plist', overriding mode 0444? "
+mofa_capture removeTarget -f "$MOFA_TEST_ROOT/locked/file.plist"
+mofa_assert_status 1 "removeTarget fails when zf_rm asks to override a locked file"
+mofa_assert_eq 1 "$REMOVAL_FAILURES" "the locked file counts as a removal failure"
+mofa_assert_contains "$MOFA_STDERR" "it holds a locked or read-only file" "the reason is logged"
+
+mofa_case "removeTarget fails closed when zsh's files module is unavailable"
+REMOVAL_FAILURES=0
+mofa_mkdir "$MOFA_TEST_ROOT/no_module/target"
+mofa_stub zmodload 1
+mofa_capture removeTarget -rf "$MOFA_TEST_ROOT/no_module/target"
+unfunction zmodload
+mofa_assert_status 1 "removeTarget fails without zf_rm"
+mofa_assert_contains "$MOFA_STDERR" "zsh's files module is unavailable" "the reason is logged"
+mofa_assert_nothing_removed "nothing falls back to /bin/rm"
+
+if (( MOFA_KERNEL_SANDBOX )); then
+	mofa_case "removeTarget refuses a target below a symbolically linked folder (real zf_rm)"
+	REMOVAL_FAILURES=0
+	t_link_dir="$MOFA_TEST_ROOT/linked_parent"
+	mofa_mkdir "$t_link_dir/other_user/Containers/com.microsoft.App" "$t_link_dir/home/Library"
+	mofa_write_file "$t_link_dir/other_user/Containers/com.microsoft.App/keep" "other user's data"
+	t_link_fixture "$t_link_dir/other_user/Containers" "$t_link_dir/home/Library/Containers"
+	unfunction zf_rm
+	mofa_capture removeTarget -rf "$t_link_dir/home/Library/Containers/com.microsoft.App"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "removeTarget refuses a target reached through a planted link"
+	mofa_assert_eq 1 "$REMOVAL_FAILURES" "the refusal counts as a removal failure"
+	mofa_assert_contains "$MOFA_STDERR" \
+		"Refusing to remove $t_link_dir/home/Library/Containers/com.microsoft.App: a folder in its path is a symbolic link" \
+		"the refusal is logged"
+	[[ -e "$t_link_dir/other_user/Containers/com.microsoft.App/keep" ]] \
+		&& mofa_pass "the other user's data is kept" || mofa_fail "the other user's data is kept"
+
+	mofa_case "removeTarget removes a folder but not what a link inside it points to (real zf_rm)"
+	REMOVAL_FAILURES=0
+	t_link_dir="$MOFA_TEST_ROOT/link_inside"
+	mofa_mkdir "$t_link_dir/target/inner" "$t_link_dir/other_user"
+	mofa_write_file "$t_link_dir/other_user/keep" "other user's data"
+	t_link_fixture "$t_link_dir/other_user" "$t_link_dir/target/inner/link"
+	unfunction zf_rm
+	mofa_capture removeTarget -rf "$t_link_dir/target"
+	mofa_stub zf_rm
+	mofa_assert_status 0 "removeTarget removes the folder"
+	[[ ! -e "$t_link_dir/target" ]] && mofa_pass "the folder is gone" || mofa_fail "the folder is gone"
+	[[ -e "$t_link_dir/other_user/keep" ]] \
+		&& mofa_pass "the link's target is kept" || mofa_fail "the link's target is kept"
+
+	mofa_case "removeTarget reports a read-only file that zf_rm keeps unasked (real zf_rm)"
+	REMOVAL_FAILURES=0
+	mofa_mkdir "$MOFA_TEST_ROOT/readonly"
+	( umask 0277; print -r -- x >| "$MOFA_TEST_ROOT/readonly/file.plist" )
+	unfunction zf_rm
+	mofa_capture removeTarget -f "$MOFA_TEST_ROOT/readonly/file.plist"
+	mofa_stub zf_rm
+	mofa_assert_status 1 "removeTarget fails for a file zf_rm will not delete unasked"
+	mofa_assert_contains "$MOFA_STDERR" "it holds a locked or read-only file" "the reason is logged"
+	[[ -e "$MOFA_TEST_ROOT/readonly/file.plist" ]] && mofa_pass "the file is kept" || mofa_fail "the file is kept"
+else
+	mofa_pass "skipped: the real zf_rm cases need the kernel sandbox"
+fi
+
+mofa_case "SetHomeFolder keeps HOME out of root's child processes"
+mofa_assert_contains "${(t)HOME}" export "the harness exports HOME before the call"
+mofa_capture SetHomeFolder ""
+mofa_assert_not_contains "${(t)HOME}" export "without a console user, HOME is no longer exported"
+if [[ -d /Users/Shared ]]; then
+	export HOME
+	mofa_stub /usr/bin/dscl 0 "NFSHomeDirectory: /Users/Shared"
+	mofa_stub_passthrough /usr/bin/awk
+	mofa_stub /usr/bin/id 0 "501"
+	mofa_capture SetHomeFolder mofatestuser
+	mofa_assert_eq "/Users/Shared" "$HOME" "SetHomeFolder points HOME at the user's home"
+	mofa_assert_not_contains "${(t)HOME}" export "with a console user, HOME is no longer exported"
 fi
 
 mofa_finish
