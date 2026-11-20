@@ -7,13 +7,13 @@
 #
 # Version History:
 # 1.0.0 - Based on the latest available package from *Office-Reset.com*; recreated for MOFA to continue maintenance where *Office-Reset.com* left off.
-# 1.1.1 - Updated the Outlook download link to fwlink 2228621 (current Microsoft package), capped
-#         keychain delete loops, and append the login keychain to the search list instead of replacing it.
 # 1.1.0 - MOFA refresh: validate the Jamf mode, download and verify the Microsoft package
 #         (pkgutil, Gatekeeper and team ID) before removing the installed app, download into
 #         a private temporary folder, capture codesign errors, read MDM-managed MAU settings,
 #         clean the console user's temp folder instead of root's, and return nonzero when a
 #         cleanup step fails.
+# 1.1.1 - Updated the Outlook download link to fwlink 2228621 (current Microsoft package), capped
+#         keychain delete loops, and append the login keychain to the search list instead of replacing it.
 # 1.2.0 - All work now runs from main(), which starts only when the file is executed (as Jamf
 #         does); sourcing the file only defines its functions, so tests can exercise them with
 #         stubbed commands. Custom MAU manifest settings (ChannelName, ManifestServer) are read
@@ -22,8 +22,10 @@
 # 1.3.0 - Security: removals use zsh's own rm in paranoid mode (zf_rm -s), which refuses a
 #         symbolic link the console user planted in any folder above or below a target (for
 #         example ~/Library/Containers), even one swapped in while it runs; a refusal fails the
-#         policy. The console user's home is no longer exported to root's child processes, and
-#         curl runs with -q, so it never reads that user's ~/.curlrc.
+#         policy. A locked or read-only file that zf_rm would leave in place also fails the
+#         policy, and a target ending in "/", "." or ".." is refused as unsafe. The console
+#         user's home is no longer exported to root's child processes, and curl runs with -q,
+#         so it never reads that user's ~/.curlrc.
 #
 # Jamf parameter 4 (MODE, optionally written as MODE=value):
 #   reset     - remove configuration data only (default)

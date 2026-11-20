@@ -20,8 +20,10 @@
 # 1.3.0 - Security: removals use zsh's own rm in paranoid mode (zf_rm -s), which refuses a
 #         symbolic link the console user planted in any folder above or below a target (for
 #         example ~/Library/Containers), even one swapped in while it runs; a refusal fails the
-#         policy. The console user's home is no longer exported to root's child processes, and
-#         curl runs with -q, so it never reads that user's ~/.curlrc.
+#         policy. A locked or read-only file that zf_rm would leave in place also fails the
+#         policy, and a target ending in "/", "." or ".." is refused as unsafe. The console
+#         user's home is no longer exported to root's child processes, and curl runs with -q,
+#         so it never reads that user's ~/.curlrc.
 #
 # Jamf parameter 4 (MODE, optionally written as MODE=value):
 #   reset     - remove configuration data only (default)

@@ -29,9 +29,11 @@
 # 1.3.0 - Security: removals use zsh's own rm in paranoid mode (zf_rm -s), which
 #         refuses a symbolic link a user planted in any folder above or below a target
 #         (for example ~/Library/Containers), even one swapped in while it runs; a
-#         refusal counts as a cleanup failure. The console user's home is no longer
-#         exported to root's child processes, and curl runs with --disable, so it
-#         never reads that user's ~/.curlrc.
+#         refusal counts as a cleanup failure, as does a locked or read-only file that
+#         zf_rm would leave in place, and a target ending in "/", "." or ".." is
+#         refused as unsafe. The console user's home is no longer exported to root's
+#         child processes, and curl runs with --disable, so it never reads that user's
+#         ~/.curlrc.
 #
 # Jamf parameters (from $4, KEY=value; unsupported keys are ignored):
 #   MODE=reinstall (default) - remove Teams for all users with a home under /Users,
